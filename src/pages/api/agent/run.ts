@@ -91,6 +91,7 @@ function classifyIntent(text: string): AgentIntent {
     "ultra rapid",
     "kwh",
     "range",
+    "charging near me",
   ];
 
   const used = [
@@ -138,6 +139,24 @@ function extractMileage(text: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * UK postcode extractor (v1).
+ * Example matches: "SW1A 1AA", "M1 1AE", "B338TH" (normalized to "B33 8TH" style if space exists)
+ */
+function extractPostcode(text: string): string | null {
+  const m = text
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .match(/\b([A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2})\b/);
+
+  if (!m) return null;
+  return m[1].replace(/\s+/g, " ").trim();
+}
+
+// -----------------------
+// Tools (server-side)
+// -----------------------
+
 // Tool: MOT risk (simple heuristic now; later plug into your ML + DVSA)
 async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mileage?: number }) {
   const age = input.vehicle_age_years ?? null;
@@ -145,7 +164,7 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
 
   let risk: "LOW" | "MEDIUM" | "HIGHER" = "MEDIUM";
   if ((age !== null && age >= 12) || (miles !== null && miles >= 120000)) risk = "HIGHER";
-  if ((age !== null && age <= 4) && (miles !== null && miles <= 40000)) risk = "LOW";
+  if (age !== null && miles !== null && age <= 4 && miles <= 40000) risk = "LOW";
 
   const drivers: string[] = [];
   drivers.push(
@@ -170,17 +189,57 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   return { risk_band: risk, drivers, checklist };
 }
 
-async function tool_get_ev_charging_context() {
-  return {
-    summary_points: [
-      "Charging readiness depends on density, reliability, and backup options near you.",
-      "Rapid charging is commonly CCS on many modern EVs; Type 2 is common for AC charging.",
-    ],
-    recommended_strategy: [
-      "Prefer sites with multiple stalls and at least one backup nearby.",
-      "Keep a fallback option within 10–15 minutes on key routes.",
-    ],
-  };
+/**
+ * Realistic EV tool: fetch nearby chargers from your EV Finder.
+ *
+ * IMPORTANT:
+ * - Set EV_FINDER_NEARBY_URL to your real endpoint.
+ * - If your endpoint is different (e.g. /api/stations?postcode=...), update URL builder.
+ */
+type EvStation = {
+  id?: string;
+  name?: string;
+  address?: string;
+  lat?: number;
+  lng?: number;
+  distance_miles?: number;
+  connectors?: string[];
+  operator?: string;
+};
+
+const EV_FINDER_NEARBY_URL =
+  process.env.EV_FINDER_NEARBY_URL ||
+  "https://ev.autodun.com/api/nearby"; // <-- CHANGE if your route differs
+
+async function tool_get_ev_nearby_from_autodun(input: {
+  postcode: string;
+  radius_miles?: number;
+  limit?: number;
+}) {
+  const radius = input.radius_miles ?? 5;
+  const limit = input.limit ?? 5;
+
+  // Expected query style:
+  //   GET {EV_FINDER_NEARBY_URL}?postcode=SW1A%201AA&radius_miles=5&limit=5
+  const url = `${EV_FINDER_NEARBY_URL}?postcode=${encodeURIComponent(
+    input.postcode
+  )}&radius_miles=${encodeURIComponent(String(radius))}&limit=${encodeURIComponent(String(limit))}`;
+
+  const r = await fetch(url, { method: "GET" });
+  if (!r.ok) {
+    throw new Error(`EV Finder request failed (${r.status})`);
+  }
+
+  const data = await r.json();
+
+  // Accept either {stations:[...]} or [...] responses
+  const stations: EvStation[] = Array.isArray(data?.stations)
+    ? data.stations
+    : Array.isArray(data)
+    ? data
+    : [];
+
+  return stations.slice(0, limit);
 }
 
 async function tool_get_used_car_buyer_checklist() {
@@ -199,6 +258,10 @@ async function tool_get_used_car_buyer_checklist() {
     ],
   };
 }
+
+// -----------------------
+// Responses
+// -----------------------
 
 function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
   return {
@@ -222,12 +285,26 @@ function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]
   };
 }
 
+function formatStationLine(s: EvStation, idx: number) {
+  const dist =
+    typeof s.distance_miles === "number" ? ` — ${s.distance_miles.toFixed(1)} mi` : "";
+  const addr = s.address ? ` — ${s.address}` : "";
+  const con = s.connectors?.length ? ` — ${s.connectors.join(", ")}` : "";
+  const op = s.operator ? ` — ${s.operator}` : "";
+  return `${idx + 1}. ${s.name || "Charging location"}${dist}${addr}${con}${op}`;
+}
+
+// -----------------------
+// Handler
+// -----------------------
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const id = requestId();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const text = String(req.body?.text || "").trim();
-  if (text.length < 8 || text.length > 800) return res.status(400).json({ error: "Invalid text length" });
+  if (text.length < 8 || text.length > 800)
+    return res.status(400).json({ error: "Invalid text length" });
 
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
@@ -260,7 +337,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       const t0 = Date.now();
-      const mot = await tool_get_mot_risk_summary({ vehicle_age_years: age ?? undefined, mileage: miles ?? undefined });
+      const mot = await tool_get_mot_risk_summary({
+        vehicle_age_years: age ?? undefined,
+        mileage: miles ?? undefined,
+      });
       tool_calls.push({ name: "get_mot_risk_summary", ok: true, ms: Date.now() - t0 });
 
       const out: AgentResponse = {
@@ -281,20 +361,60 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     if (intent === "ev_charging_readiness") {
+      // REALISTIC: if postcode is present, fetch actual nearby chargers from EV Finder.
+      const postcode = extractPostcode(text);
+
+      if (!postcode) {
+        const out: AgentResponse = {
+          status: "needs_clarification",
+          intent,
+          sections: {
+            understanding: "You want EV charging guidance near you.",
+            analysis: [
+              "To show nearby chargers, I need your UK postcode.",
+              "Optional: include connector preference (CCS, Type 2, CHAdeMO) and whether you want rapid only.",
+            ],
+            recommended_next_step: "Reply with your postcode (example: SW1A 1AA).",
+          },
+          actions: [
+            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+          ],
+          meta: { request_id: id, tool_calls },
+        };
+        return res.status(200).json(out);
+      }
+
       const t0 = Date.now();
-      const ev = await tool_get_ev_charging_context();
-      tool_calls.push({ name: "get_ev_charging_context", ok: true, ms: Date.now() - t0 });
+      const stations = await tool_get_ev_nearby_from_autodun({ postcode, radius_miles: 5, limit: 5 });
+      tool_calls.push({ name: "ev_finder_nearby", ok: true, ms: Date.now() - t0 });
+
+      const lines =
+        stations.length > 0
+          ? [
+              `Top chargers near ${postcode} (from Autodun EV Finder):`,
+              ...stations.map((s, i) => formatStationLine(s, i)),
+              "Tip: Prefer sites with multiple stalls and a backup within 10–15 minutes.",
+            ]
+          : [
+              `No stations returned for ${postcode}.`,
+              "Try a nearby postcode or open EV Charger Finder to search on the map.",
+            ];
 
       const out: AgentResponse = {
         status: "ok",
         intent,
         sections: {
-          understanding: "You want to understand EV charging readiness and how to plan charging.",
-          analysis: [...ev.summary_points, ...ev.recommended_strategy],
-          recommended_next_step: "Open EV Charger Finder to explore chargers near you.",
+          understanding: `You want nearby EV charging options for ${postcode}.`,
+          analysis: lines,
+          recommended_next_step: "Open EV Charger Finder to view these chargers on the map and get directions.",
         },
         actions: [
-          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          {
+            label: "Open EV Charger Finder",
+            href: `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`,
+            type: "primary",
+          },
           { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
         ],
         meta: { request_id: id, tool_calls },
@@ -302,6 +422,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json(out);
     }
 
+    // used_car_buyer
     const t0 = Date.now();
     const used = await tool_get_used_car_buyer_checklist();
     tool_calls.push({ name: "get_used_car_buyer_checklist", ok: true, ms: Date.now() - t0 });
