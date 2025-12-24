@@ -25,12 +25,90 @@ function requestId() {
   return "agt_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+/**
+ * Autodun AI Assistant is a bounded, tool-routing agent.
+ * It must not behave like a general-purpose chatbot.
+ */
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
 
-  const mot = ["mot", "fail", "test", "advisory", "mileage", "miles", "years old", "emission", "brake"];
-  const ev = ["ev", "charge", "charging", "charger", "ccs", "type 2", "chademo", "rapid"];
-  const used = ["buy", "buying", "used car", "second hand", "purchase", "seller", "inspection"];
+  // Hard out-of-scope triggers (regulatory/legal, logistics, unrelated)
+  // We explicitly catch these so the agent stays "tool-bounded" and doesn't hallucinate.
+  const hardOOS = [
+    "import",
+    "japan",
+    "customs",
+    "duty",
+    "vat",
+    "dvla registration",
+    "type approval",
+    "shipping",
+    "container",
+    "auction",
+    "copart",
+    "insurance quote",
+    "finance",
+    "loan",
+    "lease",
+    "visa",
+    "immigration",
+    "job",
+    "health",
+    "bitcoin",
+  ];
+  if (hardOOS.some((k) => t.includes(k))) return "unknown_out_of_scope";
+
+  const mot = [
+    "mot",
+    "fail",
+    "test",
+    "advisory",
+    "advisories",
+    "mileage",
+    "miles",
+    "years old",
+    "emission",
+    "emissions",
+    "brake",
+    "brakes",
+    "tyre",
+    "tyres",
+    "suspension",
+    "warning light",
+    "engine light",
+  ];
+
+  const ev = [
+    "ev",
+    "electric",
+    "charge",
+    "charging",
+    "charger",
+    "ccs",
+    "type 2",
+    "chademo",
+    "rapid",
+    "ultra rapid",
+    "kwh",
+    "range",
+  ];
+
+  const used = [
+    "buy",
+    "buying",
+    "used car",
+    "second hand",
+    "purchase",
+    "seller",
+    "inspection",
+    "checklist",
+    "service history",
+    "v5",
+    "hpi",
+    "cat s",
+    "cat n",
+    "write off",
+  ];
 
   const motScore = mot.filter((k) => t.includes(k)).length;
   const evScore = ev.filter((k) => t.includes(k)).length;
@@ -70,8 +148,16 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   if ((age !== null && age <= 4) && (miles !== null && miles <= 40000)) risk = "LOW";
 
   const drivers: string[] = [];
-  drivers.push(age !== null ? `Vehicle age (${age} years) increases probability of wear-related advisories.` : `Vehicle age increases probability of wear-related advisories.`);
-  drivers.push(miles !== null ? `Mileage (${miles.toLocaleString()} miles) correlates with wear on brakes, suspension, and tyres.` : `Mileage correlates with wear on brakes, suspension, and tyres.`);
+  drivers.push(
+    age !== null
+      ? `Vehicle age (${age} years) increases probability of wear-related advisories.`
+      : `Vehicle age increases probability of wear-related advisories.`
+  );
+  drivers.push(
+    miles !== null
+      ? `Mileage (${miles.toLocaleString()} miles) correlates with wear on brakes, suspension, and tyres.`
+      : `Mileage correlates with wear on brakes, suspension, and tyres.`
+  );
 
   const checklist = [
     "Brakes: pads/discs, brake fluid, handbrake effectiveness",
@@ -114,6 +200,28 @@ async function tool_get_used_car_buyer_checklist() {
   };
 }
 
+function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
+  return {
+    status: "out_of_scope",
+    intent: "unknown_out_of_scope",
+    sections: {
+      understanding: "This request is outside the current Autodun AI Assistant scope.",
+      analysis: [
+        "Autodun AI Assistant is a bounded routing agent. It does not provide general internet advice.",
+        "Supported workflows in v1: MOT preparation, EV charging readiness, used-car buying checks.",
+      ],
+      recommended_next_step:
+        "If your question relates to MOT risk, EV charging, or a used-car checklist, rephrase it and I’ll route you to the right tool.",
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: { request_id: id, tool_calls },
+  };
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const id = requestId();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -126,21 +234,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (intent === "unknown_out_of_scope") {
-      const out: AgentResponse = {
-        status: "out_of_scope",
-        intent,
-        sections: {
-          understanding: "This request is outside the current Autodun AI Assistant v1 scope.",
-          analysis: ["Supported v1 workflows: MOT preparation, EV charging readiness, used-car buying checks."],
-          recommended_next_step: "Choose one of the supported workflows below.",
-        },
-        actions: [
-          { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
-        ],
-        meta: { request_id: id, tool_calls },
-      };
-      return res.status(200).json(out);
+      return res.status(200).json(oosResponse(id, tool_calls));
     }
 
     if (intent === "mot_preparation") {
@@ -156,7 +250,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             analysis: ["Age and mileage strongly influence wear-related advisories and risk banding."],
             recommended_next_step: "Tell me your vehicle age (years) and approximate mileage.",
           },
-          actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
+          actions: [
+            { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+          ],
           meta: { request_id: id, tool_calls },
         };
         return res.status(200).json(out);
@@ -174,7 +271,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           analysis: [`Risk band: ${mot.risk_band}.`, ...mot.drivers, ...mot.checklist.slice(0, 3)],
           recommended_next_step: "Open MOT Predictor to run a personalised estimate and next actions.",
         },
-        actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
+        actions: [
+          { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
         meta: { request_id: id, tool_calls },
       };
       return res.status(200).json(out);
@@ -193,7 +293,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           analysis: [...ev.summary_points, ...ev.recommended_strategy],
           recommended_next_step: "Open EV Charger Finder to explore chargers near you.",
         },
-        actions: [{ label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" }],
+        actions: [
+          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
         meta: { request_id: id, tool_calls },
       };
       return res.status(200).json(out);
@@ -211,7 +314,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         analysis: [...used.must_check.slice(0, 4), ...used.red_flags.slice(0, 2)],
         recommended_next_step: "Use the MOT tool to review MOT history before committing.",
       },
-      actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
+      actions: [
+        { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+      ],
       meta: { request_id: id, tool_calls },
     };
     return res.status(200).json(out);
@@ -227,6 +333,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls },
     };
