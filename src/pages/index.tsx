@@ -1,9 +1,14 @@
-import { useEffect } from "react";
+import type { GetServerSideProps } from "next";
 
 export default function Home() {
-  useEffect(() => {
-    window.location.replace("/ai-assistant");
-  }, []);
-
   return null;
 }
+
+export const getServerSideProps: GetServerSideProps = async () => {
+  return {
+    redirect: {
+      destination: "/ai-assistant",
+      permanent: false,
+    },
+  };
+};
