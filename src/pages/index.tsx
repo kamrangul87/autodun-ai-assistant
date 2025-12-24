@@ -1,9 +1,5 @@
 import type { GetServerSideProps } from "next";
 
-export default function Home() {
-  return null;
-}
-
 export const getServerSideProps: GetServerSideProps = async () => {
   return {
     redirect: {
@@ -12,3 +8,7 @@ export const getServerSideProps: GetServerSideProps = async () => {
     },
   };
 };
+
+export default function Home() {
+  return null;
+}
