@@ -32,8 +32,6 @@ function requestId() {
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
 
-  // Hard out-of-scope triggers (regulatory/legal, logistics, unrelated)
-  // We explicitly catch these so the agent stays "tool-bounded" and doesn't hallucinate.
   const hardOOS = [
     "import",
     "japan",
@@ -76,9 +74,9 @@ function classifyIntent(text: string): AgentIntent {
     "suspension",
     "warning light",
     "engine light",
-    "registration",
-    "reg",
     "vrm",
+    "registration",
+    "plate",
   ];
 
   const ev = [
@@ -95,6 +93,8 @@ function classifyIntent(text: string): AgentIntent {
     "kwh",
     "range",
     "charging near me",
+    "near me",
+    "postcode",
   ];
 
   const used = [
@@ -142,59 +142,27 @@ function extractMileage(text: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * UK VRM extractor (simple, safe).
- * Looks for 5–8 chars containing both letters and numbers.
- * Examples: ML58FOU, AB12CDE, A1BCD
- */
-function extractVRM(text: string): string | null {
-  const cleaned = text.toUpperCase().replace(/[^A-Z0-9 ]/g, " ");
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-
-  for (const p of parts) {
-    if (p.length >= 5 && p.length <= 8 && /[A-Z]/.test(p) && /\d/.test(p)) return p;
-  }
-  return null;
-}
-
-/**
- * UK postcode extractor (v1).
- * Example matches: "SW1A 1AA", "M1 1AE", "B338TH"
- */
+// UK postcode extractor
 function extractPostcode(text: string): string | null {
   const m = text
     .toUpperCase()
     .replace(/\s+/g, " ")
     .match(/\b([A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2})\b/);
-
   if (!m) return null;
   return m[1].replace(/\s+/g, " ").trim();
+}
+
+// UK VRM (basic) extractor (e.g. ML58FOU or ML58 FOU)
+function extractVRM(text: string): string | null {
+  const t = text.toUpperCase().replace(/\s+/g, "");
+  const m = t.match(/\b([A-Z]{2}\d{2}[A-Z]{3})\b/);
+  return m ? m[1] : null;
 }
 
 // -----------------------
 // Tools (server-side)
 // -----------------------
 
-/**
- * LIVE MOT: fetch from your MOT Predictor API (which itself talks to DVSA server-side).
- *
- * ENV REQUIRED:
- *  - MOT_PREDICTOR_API_URL = https://mot.autodun.com/api/mot-history
- * Optional:
- *  - MOT_PREDICTOR_WEB_URL = https://mot.autodun.com/
- */
-async function tool_get_mot_history(vrm: string) {
-  const base = process.env.MOT_PREDICTOR_API_URL;
-  if (!base) throw new Error("Missing MOT_PREDICTOR_API_URL");
-
-  const url = `${base}?vrm=${encodeURIComponent(vrm)}`;
-  const r = await fetch(url, { method: "GET" });
-
-  if (!r.ok) throw new Error(`MOT lookup failed (${r.status})`);
-  return r.json();
-}
-
-// Tool: MOT risk (simple heuristic fallback when no VRM is provided)
 async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mileage?: number }) {
   const age = input.vehicle_age_years ?? null;
   const miles = input.mileage ?? null;
@@ -226,53 +194,82 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   return { risk_band: risk, drivers, checklist };
 }
 
-/**
- * Realistic EV tool: fetch nearby chargers from your EV Finder.
- *
- * ENV OPTIONAL:
- *  - EV_FINDER_NEARBY_URL (defaults to https://ev.autodun.com/api/nearby)
- */
+const MOT_PREDICTOR_API_URL =
+  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+async function tool_get_mot_history(vrm: string) {
+  const url = `${MOT_PREDICTOR_API_URL}?vrm=${encodeURIComponent(vrm)}`;
+  const r = await fetch(url, { method: "GET" });
+  if (!r.ok) throw new Error(`MOT proxy failed (${r.status})`);
+  return r.json();
+}
+
 type EvStation = {
   id?: string;
   name?: string;
   address?: string;
   lat?: number;
   lng?: number;
-  distance_miles?: number;
   connectors?: string[];
   operator?: string;
 };
 
-const EV_FINDER_NEARBY_URL =
-  process.env.EV_FINDER_NEARBY_URL || "https://ev.autodun.com/api/nearby";
+const EV_FINDER_STATIONS_URL =
+  process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
 
-async function tool_get_ev_nearby_from_autodun(input: {
-  postcode: string;
-  radius_miles?: number;
-  limit?: number;
-}) {
-  const radius = input.radius_miles ?? 5;
-  const limit = input.limit ?? 5;
+function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number) {
+  const R = 3958.7613; // miles
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
 
-  // Expected:
-  // GET {EV_FINDER_NEARBY_URL}?postcode=SW1A%201AA&radius_miles=5&limit=5
-  const url = `${EV_FINDER_NEARBY_URL}?postcode=${encodeURIComponent(
-    input.postcode
-  )}&radius_miles=${encodeURIComponent(String(radius))}&limit=${encodeURIComponent(String(limit))}`;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
 
-  const r = await fetch(url, { method: "GET" });
-  if (!r.ok) throw new Error(`EV Finder request failed (${r.status})`);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: number }> {
+  const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Postcode lookup failed (${r.status})`);
+  const data = await r.json();
+  const lat = data?.result?.latitude;
+  const lng = data?.result?.longitude;
+  if (typeof lat !== "number" || typeof lng !== "number") throw new Error("Invalid postcode");
+  return { lat, lng };
+}
+
+async function tool_get_ev_nearby(postcode: string, limit = 5, radiusMiles = 5) {
+  const { lat, lng } = await geocodePostcode(postcode);
+
+  const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
+  if (!r.ok) throw new Error(`Stations fetch failed (${r.status})`);
 
   const data = await r.json();
-
-  // Accept either {stations:[...]} or [...] responses
   const stations: EvStation[] = Array.isArray(data?.stations)
     ? data.stations
     : Array.isArray(data)
-    ? data
-    : [];
+      ? data
+      : [];
 
-  return stations.slice(0, limit);
+  const scored = stations
+    .map((s) => {
+      const sLat = typeof s.lat === "number" ? s.lat : NaN;
+      const sLng = typeof s.lng === "number" ? s.lng : NaN;
+      if (!Number.isFinite(sLat) || !Number.isFinite(sLng)) return null;
+      const d = haversineMiles(lat, lng, sLat, sLng);
+      return { ...s, distance_miles: d };
+    })
+    .filter(Boolean) as Array<EvStation & { distance_miles: number }>;
+
+  return scored
+    .filter((s) => s.distance_miles <= radiusMiles)
+    .sort((a, b) => a.distance_miles - b.distance_miles)
+    .slice(0, limit);
 }
 
 async function tool_get_used_car_buyer_checklist() {
@@ -318,31 +315,13 @@ function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]
   };
 }
 
-function formatStationLine(s: EvStation, idx: number) {
-  const dist = typeof s.distance_miles === "number" ? ` — ${s.distance_miles.toFixed(1)} mi` : "";
+function formatStationLine(s: any, idx: number) {
+  const dist =
+    typeof s.distance_miles === "number" ? ` — ${s.distance_miles.toFixed(1)} mi` : "";
   const addr = s.address ? ` — ${s.address}` : "";
   const con = s.connectors?.length ? ` — ${s.connectors.join(", ")}` : "";
   const op = s.operator ? ` — ${s.operator}` : "";
   return `${idx + 1}. ${s.name || "Charging location"}${dist}${addr}${con}${op}`;
-}
-
-function safeStr(v: any): string | null {
-  if (typeof v === "string" && v.trim()) return v.trim();
-  return null;
-}
-
-function countAdvisories(motData: any): number | null {
-  // Heuristic: look for arrays on common keys, but do not assume exact schema
-  const candidates = [
-    motData?.advisories,
-    motData?.motTests?.[0]?.advisories,
-    motData?.motTests?.[0]?.advisoryNoticeItems,
-    motData?.motTests?.[0]?.rfrAndComments,
-  ];
-  for (const c of candidates) {
-    if (Array.isArray(c)) return c.length;
-  }
-  return null;
 }
 
 // -----------------------
@@ -364,61 +343,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json(oosResponse(id, tool_calls));
     }
 
-    // -----------------------
-    // MOT
-    // -----------------------
     if (intent === "mot_preparation") {
       const vrm = extractVRM(text);
-
-      // If VRM present → live MOT history via mot.autodun.com proxy
       if (vrm) {
         const t0 = Date.now();
         const motData = await tool_get_mot_history(vrm);
-        tool_calls.push({ name: "get_mot_history", ok: true, ms: Date.now() - t0 });
+        tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
 
-        // Build a safe summary without assuming exact schema
-        const make = safeStr(motData?.vehicle?.make) || safeStr(motData?.make);
-        const model = safeStr(motData?.vehicle?.model) || safeStr(motData?.model);
-        const fuel = safeStr(motData?.vehicle?.fuelType) || safeStr(motData?.fuelType);
-        const firstUsed = safeStr(motData?.vehicle?.firstUsedDate) || safeStr(motData?.firstUsedDate);
-        const advCount = countAdvisories(motData);
-
-        const analysis: string[] = [
-          `VRM detected: ${vrm}`,
-          make ? `Make: ${make}` : "Make: (not available)",
-          model ? `Model: ${model}` : "Model: (not available)",
-          fuel ? `Fuel: ${fuel}` : "Fuel: (not available)",
-          firstUsed ? `First used: ${firstUsed}` : "First used: (not available)",
-          typeof advCount === "number"
-            ? `Recent advisory items detected: ${advCount}`
-            : "Advisories: review in MOT tool for details",
-          "Next: focus on repeat failure/advisory themes (tyres, brakes, suspension, lights).",
-          "If you share mileage + last service date, we can add a tighter risk band.",
-        ];
+        const latest = motData?.motTests?.[0];
+        const result = latest?.testResult || "UNKNOWN";
+        const odom = latest?.odometerValue ? `${latest.odometerValue} ${latest.odometerUnit || ""}` : "Unknown mileage";
+        const advisories = (latest?.defects || [])
+          .filter((d: any) => d?.type?.toUpperCase() === "ADVISORY")
+          .slice(0, 5)
+          .map((d: any) => `Advisory: ${d.text}`);
 
         const out: AgentResponse = {
           status: "ok",
           intent,
           sections: {
-            understanding: "You want MOT guidance, and we pulled live MOT history via Autodun MOT.",
-            analysis,
-            recommended_next_step: "Open MOT Predictor to view full history and next actions.",
+            understanding: `You want MOT risk guidance for VRM ${vrm}.`,
+            analysis: [
+              `Latest MOT result: ${result}.`,
+              `Recorded mileage at test: ${odom}.`,
+              ...(advisories.length ? advisories : ["No advisories found in latest test (or none returned)."]),
+              "Next step: address any suspension/tyre/brake advisories before your next MOT date.",
+            ],
+            recommended_next_step: "Open MOT Predictor to view full MOT history and plan repairs.",
           },
           actions: [
-            {
-              label: "Open MOT Predictor",
-              href: process.env.MOT_PREDICTOR_WEB_URL || "https://mot.autodun.com/",
-              type: "primary",
-            },
+            { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
             { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
           ],
           meta: { request_id: id, tool_calls },
         };
-
         return res.status(200).json(out);
       }
 
-      // No VRM → fallback to heuristic
       const age = extractAgeYears(text);
       const miles = extractMileage(text);
 
@@ -428,10 +389,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           intent,
           sections: {
             understanding: "You want MOT guidance, but key details are missing.",
-            analysis: [
-              "Share either a VRM (registration) for live MOT lookup, or provide age + mileage for a quick risk estimate.",
-            ],
-            recommended_next_step: "Reply with your VRM (example: ML58FOU) OR tell me vehicle age and mileage.",
+            analysis: ["Send VRM (e.g. ML58FOU) OR tell me vehicle age and mileage."],
+            recommended_next_step: "Reply with VRM, or age (years) + approximate mileage.",
           },
           actions: [
             { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
@@ -443,11 +402,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       const t0 = Date.now();
-      const mot = await tool_get_mot_risk_summary({
-        vehicle_age_years: age ?? undefined,
-        mileage: miles ?? undefined,
-      });
-      tool_calls.push({ name: "get_mot_risk_summary", ok: true, ms: Date.now() - t0 });
+      const mot = await tool_get_mot_risk_summary({ vehicle_age_years: age ?? undefined, mileage: miles ?? undefined });
+      tool_calls.push({ name: "mot_risk_summary", ok: true, ms: Date.now() - t0 });
 
       const out: AgentResponse = {
         status: "ok",
@@ -466,12 +422,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json(out);
     }
 
-    // -----------------------
-    // EV
-    // -----------------------
     if (intent === "ev_charging_readiness") {
       const postcode = extractPostcode(text);
-
       if (!postcode) {
         const out: AgentResponse = {
           status: "needs_clarification",
@@ -494,18 +446,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       const t0 = Date.now();
-      const stations = await tool_get_ev_nearby_from_autodun({ postcode, radius_miles: 5, limit: 5 });
-      tool_calls.push({ name: "ev_finder_nearby", ok: true, ms: Date.now() - t0 });
+      const stations = await tool_get_ev_nearby(postcode, 5, 5);
+      tool_calls.push({ name: "ev_nearby_from_stations", ok: true, ms: Date.now() - t0 });
 
       const lines =
         stations.length > 0
           ? [
-              `Top chargers near ${postcode} (from Autodun EV Finder):`,
-              ...stations.map((s, i) => formatStationLine(s, i)),
-              "Tip: Prefer sites with multiple stalls and a backup within 10–15 minutes.",
+              `Top chargers near ${postcode} (Autodun live stations):`,
+              ...stations.map((s: any, i: number) => formatStationLine(s, i)),
+              "Tip: prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
             ]
           : [
-              `No stations returned for ${postcode}.`,
+              `No stations found within 5 miles of ${postcode}.`,
               "Try a nearby postcode or open EV Charger Finder to search on the map.",
             ];
 
@@ -518,11 +470,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           recommended_next_step: "Open EV Charger Finder to view these chargers on the map and get directions.",
         },
         actions: [
-          {
-            label: "Open EV Charger Finder",
-            href: `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`,
-            type: "primary",
-          },
+          { label: "Open EV Charger Finder", href: `https://ev.autodun.com/`, type: "primary" },
           { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
         ],
         meta: { request_id: id, tool_calls },
@@ -530,12 +478,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json(out);
     }
 
-    // -----------------------
-    // Used car
-    // -----------------------
+    // used_car_buyer
     const t0 = Date.now();
     const used = await tool_get_used_car_buyer_checklist();
-    tool_calls.push({ name: "get_used_car_buyer_checklist", ok: true, ms: Date.now() - t0 });
+    tool_calls.push({ name: "used_car_checklist", ok: true, ms: Date.now() - t0 });
 
     const out: AgentResponse = {
       status: "ok",
@@ -552,14 +498,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       meta: { request_id: id, tool_calls },
     };
     return res.status(200).json(out);
-  } catch {
+  } catch (e: any) {
     const out: AgentResponse = {
       status: "error",
       intent,
       sections: {
         understanding: "We could not complete the analysis.",
-        analysis: ["A temporary error occurred while running the agent."],
-        recommended_next_step: "Please try again.",
+        analysis: [String(e?.message || "A temporary error occurred while running the agent.")],
+        recommended_next_step: "Check environment variables, redeploy, then try again.",
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
