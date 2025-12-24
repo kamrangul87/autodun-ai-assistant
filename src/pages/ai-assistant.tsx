@@ -1,6 +1,7 @@
 import Head from "next/head";
 import { useMemo, useState } from "react";
 import { decideIntent } from "@/lib/agent/decision";
+
 type AgentStatus = "ok" | "needs_clarification" | "out_of_scope" | "error";
 type AgentIntent =
   | "mot_preparation"
@@ -42,19 +43,80 @@ export default function AIAssistantPage() {
     setRes(null);
 
     try {
-      const r = await fetch("/api/agent/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          context: { locale: "en-GB", timezone: "Europe/London" },
-        }),
+      const t0 = performance.now();
+      const decision = decideIntent(text);
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+
+      // Map decision -> your UI response contract
+      const status: AgentStatus =
+        decision.intent === "unknown"
+          ? "out_of_scope"
+          : decision.missing.length > 0
+            ? "needs_clarification"
+            : "ok";
+
+      const intent: AgentIntent =
+        decision.intent === "mot_preparation"
+          ? "mot_preparation"
+          : decision.intent === "ev_charging_readiness"
+            ? "ev_charging_readiness"
+            : decision.intent === "used_car_buyer"
+              ? "used_car_buyer"
+              : "unknown_out_of_scope";
+
+      const understanding =
+        intent === "mot_preparation"
+          ? decision.missing.length > 0
+            ? "You want MOT guidance, but key details are missing."
+            : "You want MOT guidance based on your vehicle profile."
+          : intent === "ev_charging_readiness"
+            ? "You want EV charging guidance."
+            : intent === "used_car_buyer"
+              ? "You want a used-car buying checklist and risk checks."
+              : "I’m not fully sure which Autodun tool you need yet.";
+
+      const recommended_next_step =
+        decision.missing.length > 0
+          ? `Tell me ${decision.missing.join(" and ")}.`
+          : intent === "unknown_out_of_scope"
+            ? "Please rephrase your goal as MOT, EV charging, or used car buying."
+            : "Continue with the recommended tool and follow the checklist.";
+
+      const analysis: string[] = [
+        ...decision.rationale,
+        ...(decision.missing.length ? [`Missing info: ${decision.missing.join(", ")}`] : []),
+        `Confidence: ${Math.round(decision.confidence * 100)}%`,
+      ];
+
+      // Actions
+      const actions: AgentAction[] = [];
+      if (decision.route) {
+        actions.push({
+          label: decision.route.label,
+          href: decision.route.href,
+          type: "primary",
+        });
+      } else {
+        // Fallback actions (still useful)
+        actions.push(
+          { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
+          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" }
+        );
+      }
+
+      setRes({
+        status,
+        intent,
+        sections: {
+          understanding,
+          analysis,
+          recommended_next_step,
+        },
+        actions,
+        meta: {
+          tool_calls: [{ name: "decideIntent", ok: true, ms }],
+        },
       });
-
-      const data = (await r.json()) as AgentResponse;
-
-      if (!r.ok) throw new Error(data?.sections?.recommended_next_step || "Request failed");
-      setRes(data);
     } catch (e: any) {
       setErr(e?.message || "Something went wrong. Please try again.");
       setRes({
