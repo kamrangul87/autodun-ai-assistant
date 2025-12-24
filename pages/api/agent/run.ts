@@ -194,16 +194,20 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
 }
 
 type EvStation = {
-  id?: string;
+  id?: string | number;
   name?: string;
   address?: string;
+  postcode?: string;
   lat?: number;
   lng?: number;
   connectors?: string[];
+  connectorsDetailed?: any;
   operator?: string;
+  source?: string;
 };
 
-const EV_FINDER_STATIONS_URL = process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
+const EV_FINDER_STATIONS_URL =
+  process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
 const EV_FINDER_WEB_URL = process.env.EV_FINDER_WEB_URL || "https://ev.autodun.com/";
 
 function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number) {
@@ -219,9 +223,7 @@ function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number) 
   const sinDLat = Math.sin(dLat / 2);
   const sinDLng = Math.sin(dLng / 2);
 
-  const h =
-    sinDLat * sinDLat +
-    Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
 
   const c = 2 * Math.asin(Math.min(1, Math.sqrt(h)));
   return R * c;
@@ -239,13 +241,36 @@ async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: nu
   return { lat, lng };
 }
 
-async function fetchStations(): Promise<EvStation[]> {
-  const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
+/**
+ * ✅ FIXED:
+ * Your EV Finder API returns { items: [...] } when called with lat/lng params.
+ * Previously you were calling EV_FINDER_STATIONS_URL without params and only reading {stations:[...]} or [...]
+ * This always produced [] -> which triggered the "No stations with coordinates..." message.
+ */
+async function fetchStationsNear(params: {
+  lat: number;
+  lng: number;
+  radiusMiles?: number;
+  max?: number;
+}): Promise<EvStation[]> {
+  const radiusMiles = typeof params.radiusMiles === "number" ? params.radiusMiles : 10;
+  const max = typeof params.max === "number" ? params.max : 50;
+
+  const u = new URL(EV_FINDER_STATIONS_URL);
+  u.searchParams.set("lat", String(params.lat));
+  u.searchParams.set("lng", String(params.lng));
+  u.searchParams.set("radius", String(radiusMiles));
+  u.searchParams.set("max", String(max));
+
+  const r = await fetch(u.toString(), { method: "GET" });
   if (!r.ok) throw new Error(`Stations fetch failed (${r.status})`);
+
   const data = await r.json();
 
-  // Accept {stations:[...]} or [...]
-  const stations: EvStation[] = Array.isArray(data?.stations)
+  // ✅ Accept {items:[...]} (your real API), plus legacy shapes for safety
+  const stations: EvStation[] = Array.isArray(data?.items)
+    ? data.items
+    : Array.isArray(data?.stations)
     ? data.stations
     : Array.isArray(data)
     ? data
@@ -279,7 +304,12 @@ function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]
 function formatStationLine(s: EvStation, idx: number, distanceMiles?: number) {
   const dist = typeof distanceMiles === "number" ? ` — ${distanceMiles.toFixed(1)} mi` : "";
   const addr = s.address ? ` — ${s.address}` : "";
-  const con = s.connectors?.length ? ` — ${s.connectors.join(", ")}` : "";
+  const con =
+    (s as any).connectorsDetailed?.length
+      ? ` — ${String((s as any).connectorsDetailed[0]?.type || "").trim()}`
+      : s.connectors?.length
+      ? ` — ${s.connectors.join(", ")}`
+      : "";
   const op = s.operator ? ` — ${s.operator}` : "";
   return `${idx + 1}. ${s.name || "Charging location"}${dist}${addr}${con}${op}`;
 }
@@ -310,7 +340,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const text = String(req.body?.text || "").trim();
-  if (text.length < 3 || text.length > 800) return res.status(400).json({ error: "Invalid text length" });
+  if (text.length < 3 || text.length > 800)
+    return res.status(400).json({ error: "Invalid text length" });
 
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
@@ -338,7 +369,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             recommended_next_step: "Open MOT Predictor and run the check using your VRM.",
           },
           actions: [
-            { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+            {
+              label: "Open MOT Predictor",
+              href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`,
+              type: "primary",
+            },
             { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
           ],
           meta: { request_id: id, tool_calls },
@@ -354,7 +389,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           sections: {
             understanding: "You want MOT guidance, but key details are missing.",
             analysis: ["Tell me VRM OR vehicle age + mileage to estimate risk and give a checklist."],
-            recommended_next_step: "Reply with your VRM (example: ML58FOU) or say “10 years old, 85k miles”.",
+            recommended_next_step:
+              "Reply with your VRM (example: ML58FOU) or say “10 years old, 85k miles”.",
           },
           actions: [
             { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
@@ -366,7 +402,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       const t0 = Date.now();
-      const mot = await tool_get_mot_risk_summary({ vehicle_age_years: age ?? undefined, mileage: miles ?? undefined });
+      const mot = await tool_get_mot_risk_summary({
+        vehicle_age_years: age ?? undefined,
+        mileage: miles ?? undefined,
+      });
       tool_calls.push({ name: "get_mot_risk_summary", ok: true, ms: Date.now() - t0 });
 
       const out: AgentResponse = {
@@ -375,7 +414,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         sections: {
           understanding: "You want an MOT risk view and what to check before the test.",
           analysis: [`Risk band: ${mot.risk_band}.`, ...mot.drivers, ...mot.checklist.slice(0, 4)],
-          recommended_next_step: "Open MOT Predictor to run a personalised check (VRM-based) and next actions.",
+          recommended_next_step:
+            "Open MOT Predictor to run a personalised check (VRM-based) and next actions.",
         },
         actions: [
           { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
@@ -422,7 +462,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           sections: {
             understanding: `We could not geocode postcode ${postcode}.`,
             analysis: ["Please check the postcode and try again."],
-            recommended_next_step: "Try another nearby postcode, or open EV Charger Finder to search on the map.",
+            recommended_next_step:
+              "Try another nearby postcode, or open EV Charger Finder to search on the map.",
           },
           actions: [
             { label: "Open EV Charger Finder", href: EV_FINDER_WEB_URL, type: "primary" },
@@ -433,8 +474,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json(out);
       }
 
+      // ✅ FIX: fetch stations near the geocoded lat/lng (returns {items:[...]} with lat/lng)
       const tStations = Date.now();
-      const stations = await fetchStations();
+      const stations = await fetchStationsNear({
+        lat: geo.lat,
+        lng: geo.lng,
+        radiusMiles: 10,
+        max: 50,
+      });
       tool_calls.push({ name: "ev_finder_stations", ok: true, ms: Date.now() - tStations });
 
       const withDistance = stations
@@ -467,7 +514,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
         },
         actions: [
-          { label: "Open EV Charger Finder", href: `${EV_FINDER_WEB_URL}?postcode=${encodeURIComponent(postcode)}`, type: "primary" },
+          {
+            label: "Open EV Charger Finder",
+            href: `${EV_FINDER_WEB_URL}?postcode=${encodeURIComponent(postcode)}`,
+            type: "primary",
+          },
           { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
         ],
         meta: { request_id: id, tool_calls },
