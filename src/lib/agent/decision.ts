@@ -9,41 +9,40 @@ export type AgentDecision = {
   confidence: number; // 0–1
   missing: string[];
   rationale: string[];
-  route: {
-    label: string;
-    href: string;
-  } | null;
+  route: { label: string; href: string } | null;
 };
 
 export function decideIntent(input: string): AgentDecision {
-  const text = input.toLowerCase();
+  const text = (input || "").toLowerCase().trim();
 
   // Signals
-  const motSignals = ["mot", "fail", "advisory", "pass"];
-  const evSignals = ["ev", "charge", "charging", "station"];
-  const usedSignals = ["used car", "buying", "second hand"];
+  const motSignals = ["mot", "fail", "advisory", "pass", "mileage", "odometer"];
+  const evSignals = ["ev", "charge", "charging", "charger", "station", "plug", "connector"];
+  const usedSignals = ["used car", "buying", "second hand", "secondhand", "purchase", "seller"];
 
-  const hasMot = motSignals.some(s => text.includes(s));
-  const hasEv = evSignals.some(s => text.includes(s));
-  const hasUsed = usedSignals.some(s => text.includes(s));
+  const hasMot = motSignals.some((s) => text.includes(s));
+  const hasEv = evSignals.some((s) => text.includes(s));
+  const hasUsed = usedSignals.some((s) => text.includes(s));
+
+  // Helpers: detect age + mileage
+  const hasAge = /\b\d+\s*(year|years|yr|yrs)\b/.test(text);
+  const hasMileage = /\b\d{1,3}(?:,\d{3})?\s*(mile|miles|mi)\b/.test(text) || /\b\d{4,6}\b/.test(text);
 
   if (hasMot) {
     const missing: string[] = [];
-    if (!/\b\d+\s*(year|years)\b/.test(text)) missing.push("vehicle age");
-    if (!/\b\d{4,6}\s*(mile|miles|mi)\b/.test(text)) missing.push("mileage");
+    if (!hasAge) missing.push("vehicle age (years)");
+    if (!hasMileage) missing.push("mileage (miles)");
 
     return {
       intent: "mot_preparation",
       confidence: 0.9,
       missing,
       rationale: [
-        "User explicitly referenced MOT",
-        "Risk is primarily driven by age and mileage"
+        "You referenced MOT risk / passing / failing",
+        "Age and mileage are the primary drivers of wear-related failure risk and advisories",
       ],
-      route: {
-        label: "Open MOT Predictor",
-        href: "/mot"
-      }
+      // IMPORTANT: set this to your MOT Predictor URL (your subdomain or path)
+      route: { label: "Open MOT Predictor", href: "https://mot.autodun.com" },
     };
   }
 
@@ -51,15 +50,13 @@ export function decideIntent(input: string): AgentDecision {
     return {
       intent: "ev_charging_readiness",
       confidence: 0.85,
-      missing: ["location"],
+      missing: ["your location / postcode", "connector type (optional)"],
       rationale: [
-        "User referenced EV charging",
-        "Location is required for charger availability"
+        "You referenced EV charging",
+        "Location determines nearby availability and practical charging options",
       ],
-      route: {
-        label: "Open EV Finder",
-        href: "/ev-finder"
-      }
+      // IMPORTANT: set this to your EV Finder URL (your subdomain or path)
+      route: { label: "Open EV Charger Finder", href: "https://ev.autodun.com" },
     };
   }
 
@@ -67,23 +64,20 @@ export function decideIntent(input: string): AgentDecision {
     return {
       intent: "used_car_buyer",
       confidence: 0.8,
-      missing: ["budget", "vehicle age"],
+      missing: ["car make/model (optional)", "budget (optional)"],
       rationale: [
-        "User is evaluating a used vehicle",
-        "MOT history and advisories reduce purchase risk"
+        "You’re evaluating a used car purchase",
+        "MOT history + advisories + owner checks reduce purchase risk",
       ],
-      route: {
-        label: "Check MOT History",
-        href: "/mot"
-      }
+      route: { label: "Check MOT History", href: "https://mot.autodun.com" },
     };
   }
 
   return {
     intent: "unknown",
-    confidence: 0.4,
-    missing: ["goal clarification"],
-    rationale: ["No strong domain signal detected"],
-    route: null
+    confidence: 0.45,
+    missing: ["a clear goal (MOT, EV charging, or used car buying)"],
+    rationale: ["No strong domain signal detected from your message"],
+    route: null,
   };
 }
