@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { getNearbyChargers } from "@/lib/tools/evFinder";
 
 type AgentStatus = "ok" | "needs_clarification" | "out_of_scope" | "error";
 type AgentIntent =
@@ -162,18 +163,6 @@ function extractPostcode(text: string): string | null {
 // Tools
 // -----------------------
 
-const MOT_PREDICTOR_API_URL =
-  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
-
-async function tool_get_mot_history(vrm: string) {
-  const u = new URL(MOT_PREDICTOR_API_URL);
-  u.searchParams.set("vrm", vrm);
-
-  const r = await fetch(u.toString(), { method: "GET" });
-  if (!r.ok) throw new Error(`MOT history fetch failed (${r.status})`);
-  return r.json();
-}
-
 async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mileage?: number }) {
   const age = input.vehicle_age_years ?? null;
   const miles = input.mileage ?? null;
@@ -205,63 +194,88 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   return { risk_band: risk, drivers, checklist };
 }
 
-type EvStation = {
-  id?: string;
-  name?: string;
-  address?: string;
-  lat?: number;
-  lng?: number;
-  connectors?: string[];
-  operator?: string;
-};
+type MotTestLike = Record<string, any>;
 
-const EV_FINDER_STATIONS_URL = process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
-const EV_FINDER_WEB_URL = process.env.EV_FINDER_WEB_URL || "https://ev.autodun.com/";
-
-function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number) {
-  const R = 3958.8; // Earth radius miles
-  const toRad = (x: number) => (x * Math.PI) / 180;
-
-  const dLat = toRad(bLat - aLat);
-  const dLng = toRad(bLng - aLng);
-
-  const lat1 = toRad(aLat);
-  const lat2 = toRad(bLat);
-
-  const sinDLat = Math.sin(dLat / 2);
-  const sinDLng = Math.sin(dLng / 2);
-
-  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
-
-  const c = 2 * Math.asin(Math.min(1, Math.sqrt(h)));
-  return R * c;
+function pickDate(t: MotTestLike): number {
+  const raw =
+    t?.completedDate ||
+    t?.completedDateTime ||
+    t?.testDate ||
+    t?.motTestExpiryDate ||
+    t?.expiryDate ||
+    t?.date;
+  const ms = Date.parse(String(raw || ""));
+  return Number.isFinite(ms) ? ms : 0;
 }
 
-// Postcode -> lat/lng (server-side)
-async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: number } | null> {
-  const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`;
-  const r = await fetch(url);
-  if (!r.ok) return null;
-  const j = await r.json();
-  const lat = j?.result?.latitude;
-  const lng = j?.result?.longitude;
-  if (typeof lat !== "number" || typeof lng !== "number") return null;
-  return { lat, lng };
+function normalizeResult(t: MotTestLike): string {
+  const r = String(t?.testResult || t?.result || t?.status || "").toUpperCase();
+  if (r.includes("PASS")) return "PASSED";
+  if (r.includes("FAIL")) return "FAILED";
+  if (r) return r;
+  return "UNKNOWN";
 }
 
-async function fetchStations(): Promise<EvStation[]> {
-  const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
-  if (!r.ok) throw new Error(`Stations fetch failed (${r.status})`);
-  const data = await r.json();
+function countAdvisories(t: MotTestLike): number {
+  const a =
+    t?.advisories ||
+    t?.advisoryItems ||
+    t?.advisoryNoticeItems ||
+    t?.advisory ||
+    t?.advisoryRfrAndComments;
+  if (Array.isArray(a)) return a.length;
+  return 0;
+}
 
-  // Accept {stations:[...]} or [...]
-  const stations: EvStation[] = Array.isArray(data?.stations)
-    ? data.stations
-    : Array.isArray(data)
-    ? data
-    : [];
+function countFails(t: MotTestLike): number {
+  const f =
+    t?.fails ||
+    t?.failItems ||
+    t?.failureItems ||
+    t?.failReasons ||
+    t?.defects ||
+    t?.reasons;
+  if (Array.isArray(f)) return f.length;
+  return 0;
+}
 
-  return stations;
+/**
+ * LIVE MOT history tool call via your MOT Predictor proxy.
+ * Env:
+ * - MOT_PREDICTOR_API_URL = https://mot.autodun.com/api/mot-history
+ */
+async function tool_get_mot_history(vrm: string) {
+  const base =
+    process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+  const url = new URL(base);
+  url.searchParams.set("vrm", vrm);
+
+  const r = await fetch(url.toString(), { method: "GET" });
+  if (!r.ok) throw new Error(`MOT history request failed (${r.status})`);
+
+  const payload = await r.json();
+
+  // Accept many shapes safely
+  const tests =
+    (Array.isArray(payload) && payload) ||
+    (Array.isArray(payload?.motTests) && payload.motTests) ||
+    (Array.isArray(payload?.tests) && payload.tests) ||
+    (Array.isArray(payload?.history) && payload.history) ||
+    (Array.isArray(payload?.data) && payload.data) ||
+    (Array.isArray(payload?.records) && payload.records) ||
+    [];
+
+  const latest = [...tests].sort((a: any, b: any) => pickDate(b) - pickDate(a))[0] as MotTestLike | undefined;
+
+  return {
+    rawCount: tests.length,
+    latest: latest || null,
+    latestDateMs: latest ? pickDate(latest) : 0,
+    latestResult: latest ? normalizeResult(latest) : "UNKNOWN",
+    latestAdvisories: latest ? countAdvisories(latest) : 0,
+    latestFails: latest ? countFails(latest) : 0,
+  };
 }
 
 function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
@@ -279,19 +293,11 @@ function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]
     },
     actions: [
       { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-      { label: "Open EV Charger Finder", href: EV_FINDER_WEB_URL, type: "secondary" },
+      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
     meta: { request_id: id, tool_calls },
   };
-}
-
-function formatStationLine(s: EvStation, idx: number, distanceMiles?: number) {
-  const dist = typeof distanceMiles === "number" ? ` — ${distanceMiles.toFixed(1)} mi` : "";
-  const addr = s.address ? ` — ${s.address}` : "";
-  const con = s.connectors?.length ? ` — ${s.connectors.join(", ")}` : "";
-  const op = s.operator ? ` — ${s.operator}` : "";
-  return `${idx + 1}. ${s.name || "Charging location"}${dist}${addr}${con}${op}`;
 }
 
 async function tool_get_used_car_buyer_checklist() {
@@ -334,34 +340,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const age = extractAgeYears(text);
       const miles = extractMileage(text);
 
-      // If user provided VRM, fetch MOT history summary + route to MOT Predictor
+      // ✅ LIVE MOT tool call when VRM exists
       if (vrm) {
         const tMot = Date.now();
-        let motSummaryLine =
-          "Open MOT Predictor to pull MOT history and highlight repeat advisories/fail areas.";
+        const mot = await tool_get_mot_history(vrm);
+        tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
 
-        try {
-          const motData = await tool_get_mot_history(vrm);
-          tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
-
-          const tests = Array.isArray(motData?.motTests) ? motData.motTests : [];
-          const latest = tests[0];
-          const result = latest?.testResult || latest?.result || "unknown";
-          const date = latest?.completedDate || latest?.testDate || "";
-          const rfr = Array.isArray(latest?.rfrAndComments) ? latest.rfrAndComments : [];
-
-          const advisories = rfr.filter((x: any) =>
-            String(x?.type || "").toLowerCase().includes("advis")
-          ).length;
-
-          const fails = rfr.filter((x: any) =>
-            String(x?.type || "").toLowerCase().includes("fail")
-          ).length;
-
-          motSummaryLine = `Latest MOT: ${result}${date ? ` (${date})` : ""}. Advisories: ${advisories}. Fails: ${fails}.`;
-        } catch (err) {
-          tool_calls.push({ name: "mot_history", ok: false, ms: Date.now() - tMot });
-        }
+        const latestDateIso =
+          mot.latestDateMs > 0 ? new Date(mot.latestDateMs).toISOString() : "unknown date";
 
         const out: AgentResponse = {
           status: "ok",
@@ -369,7 +355,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           sections: {
             understanding: `You want MOT risk for VRM ${vrm}.`,
             analysis: [
-              motSummaryLine,
+              `Latest MOT: ${mot.latestResult} (${latestDateIso}). Advisories: ${mot.latestAdvisories}. Fails: ${mot.latestFails}.`,
               "Focus on repeat themes: brakes, suspension, tyres, emissions/warning lights.",
               "Fix the top wear items before test day to reduce failure probability.",
             ],
@@ -386,7 +372,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           ],
           meta: { request_id: id, tool_calls },
         };
-
         return res.status(200).json(out);
       }
 
@@ -447,29 +432,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             recommended_next_step: "Reply with your postcode (example: SW1A 1AA).",
           },
           actions: [
-            { label: "Open EV Charger Finder", href: EV_FINDER_WEB_URL, type: "primary" },
-            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-          ],
-          meta: { request_id: id, tool_calls },
-        };
-        return res.status(200).json(out);
-      }
-
-      const tGeo = Date.now();
-      const geo = await geocodePostcode(postcode);
-      tool_calls.push({ name: "postcode_geocode", ok: !!geo, ms: Date.now() - tGeo });
-
-      if (!geo) {
-        const out: AgentResponse = {
-          status: "error",
-          intent,
-          sections: {
-            understanding: `We could not geocode postcode ${postcode}.`,
-            analysis: ["Please check the postcode and try again."],
-            recommended_next_step: "Try another nearby postcode, or open EV Charger Finder to search on the map.",
-          },
-          actions: [
-            { label: "Open EV Charger Finder", href: EV_FINDER_WEB_URL, type: "primary" },
+            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
             { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
           ],
           meta: { request_id: id, tool_calls },
@@ -478,27 +441,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       const tStations = Date.now();
-      const stations = await fetchStations();
+      const stations = await getNearbyChargers({ postcode, radiusMiles: 10, limit: 5 });
       tool_calls.push({ name: "ev_finder_stations", ok: true, ms: Date.now() - tStations });
 
-      const withDistance = stations
-        .filter((s) => typeof s.lat === "number" && typeof s.lng === "number")
-        .map((s) => ({
-          s,
-          d: haversineMiles(geo.lat, geo.lng, s.lat as number, s.lng as number),
-        }))
-        .sort((a, b) => a.d - b.d)
-        .slice(0, 5);
-
       const lines =
-        withDistance.length > 0
+        stations.length > 0
           ? [
               `Top chargers near ${postcode} (computed from Autodun EV Finder stations):`,
-              ...withDistance.map((x, i) => formatStationLine(x.s, i, x.d)),
+              ...stations.map((s: any, i: number) => {
+                const dist = typeof s?.distance_miles === "number" ? ` — ${s.distance_miles.toFixed(1)} mi` : "";
+                const addr = s?.address ? ` — ${s.address}` : "";
+                const con =
+                  Array.isArray(s?.connectorsDetailed) && s.connectorsDetailed.length
+                    ? ` — ${s.connectorsDetailed.map((c: any) => c?.type).filter(Boolean).join(", ")}`
+                    : "";
+                return `${i + 1}. ${s?.name || "Charging location"}${dist}${addr}${con}`;
+              }),
               "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
             ]
           : [
-              `No stations with coordinates were returned from EV Finder for distance sorting.`,
+              `No stations were returned for that postcode.`,
               "Open EV Charger Finder to search on the map.",
             ];
 
@@ -511,7 +473,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
         },
         actions: [
-          { label: "Open EV Charger Finder", href: `${EV_FINDER_WEB_URL}?postcode=${encodeURIComponent(postcode)}`, type: "primary" },
+          { label: "Open EV Charger Finder", href: `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`, type: "primary" },
           { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
         ],
         meta: { request_id: id, tool_calls },
@@ -553,7 +515,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
-        { label: "Open EV Charger Finder", href: EV_FINDER_WEB_URL, type: "secondary" },
+        { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls },
