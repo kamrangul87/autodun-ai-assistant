@@ -10,29 +10,6 @@ type EvFinderStation = {
   source?: string;
 };
 
-function toNum(v: any): number | null {
-  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
-  return Number.isFinite(n) ? n : null;
-}
-
-function haversineMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
-  const R = 3958.7613; // Earth radius in miles
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-
-  const s =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
-  return R * c;
-}
-
 async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: number }> {
   const pc = postcode.trim();
   const r = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`, {
@@ -80,7 +57,11 @@ function normalizeStationsFromEvFinderResponse(data: any): EvFinderStation[] {
   return [];
 }
 
-export async function getNearbyChargers(params: { postcode: string; radiusMiles?: number; limit?: number }) {
+export async function getNearbyChargers(params: {
+  postcode: string;
+  radiusMiles?: number;
+  limit?: number;
+}) {
   const { postcode } = params;
   const radiusMiles = typeof params.radiusMiles === "number" ? params.radiusMiles : 10;
   const limit = typeof params.limit === "number" ? params.limit : 20;
@@ -104,27 +85,8 @@ export async function getNearbyChargers(params: { postcode: string; radiusMiles?
   const data = await r.json();
   const stations = normalizeStationsFromEvFinderResponse(data);
 
-  // 3) Normalize coords + compute distance + sort by distance
-  const origin = { lat, lng };
-
-  const normalized = stations
-    .map((s: any) => {
-      const slat = toNum(s?.lat);
-      const slng = toNum(s?.lng);
-      if (slat === null || slng === null) return null;
-
-      const distance_miles = haversineMiles(origin, { lat: slat, lng: slng });
-
-      return {
-        ...s,
-        lat: slat,
-        lng: slng,
-        distance_miles,
-      } as EvFinderStation;
-    })
-    .filter(Boolean) as EvFinderStation[];
-
-  normalized.sort((a, b) => (a.distance_miles ?? 1e9) - (b.distance_miles ?? 1e9));
-
-  return normalized.slice(0, limit);
+  // return only stations with coords
+  return stations
+    .filter((s) => typeof s.lat === "number" && typeof s.lng === "number")
+    .slice(0, limit);
 }
