@@ -172,13 +172,49 @@ function decideFixOrIgnore(
 }
 
 /* =======================
-   MOT Intelligence v2 + v3
+   COST IMPACT ESTIMATOR (Layer-3)
+======================= */
+
+const COST_RANGES: Record<string, { min: number; max: number }> = {
+  suspension: { min: 300, max: 1200 },
+  brakes: { min: 150, max: 600 },
+  tyres: { min: 120, max: 400 },
+  exhaust: { min: 150, max: 700 },
+  corrosion: { min: 300, max: 2500 },
+  emissions: { min: 100, max: 800 },
+  other: { min: 150, max: 600 },
+};
+
+function estimateCost(decisions: FixDecision[]) {
+  let minTotal = 0;
+  let maxTotal = 0;
+
+  const breakdown = decisions
+    .filter((d) => d.decision === "FIX")
+    .map((d) => {
+      const range = COST_RANGES[d.theme] || COST_RANGES.other;
+      minTotal += range.min;
+      maxTotal += range.max;
+      return {
+        theme: d.theme,
+        range: `£${range.min} – £${range.max}`,
+      };
+    });
+
+  return {
+    breakdown,
+    totalRange: `£${minTotal} – £${maxTotal}`,
+  };
+}
+
+/* =======================
+   MOT Intelligence v3
 ======================= */
 
 const MOT_HISTORY_API_URL =
   process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
 
-async function tool_get_mot_intelligence_v2(vrm: string) {
+async function tool_get_mot_intelligence_v3(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${vrm}`);
   if (!r.ok) throw new Error("MOT fetch failed");
 
@@ -231,6 +267,7 @@ async function tool_get_mot_intelligence_v2(vrm: string) {
   });
 
   const decisions = decideFixOrIgnore(patterns);
+  const costEstimate = estimateCost(decisions);
 
   const risk = scoreMotRisk({
     ageYears,
@@ -239,7 +276,7 @@ async function tool_get_mot_intelligence_v2(vrm: string) {
     repeatThemes: themeCounts,
   });
 
-  return { vrm, patterns, decisions, risk };
+  return { vrm, patterns, decisions, costEstimate, risk };
 }
 
 /* =======================
@@ -257,7 +294,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!vrm) return res.status(200).json({ status: "needs_clarification" });
 
     const t0 = Date.now();
-    const intel = await tool_get_mot_intelligence_v2(vrm);
+    const intel = await tool_get_mot_intelligence_v3(vrm);
     tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
 
     return res.status(200).json({
@@ -273,17 +310,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               (d) =>
                 `FIX NOW: ${d.theme} — ${d.reason} (confidence: ${d.confidence}).`
             ),
-          ...intel.decisions
-            .filter((d) => d.decision === "MONITOR")
-            .slice(0, 2)
-            .map(
-              (d) =>
-                `Monitor: ${d.theme} — ${d.reason}.`
-            ),
+          `Estimated MOT preparation cost: ${intel.costEstimate.totalRange}`,
+          ...intel.costEstimate.breakdown.map(
+            (b) => `• ${b.theme}: ${b.range}`
+          ),
           `Risk score: ${intel.risk.score}/100 (${intel.risk.band})`,
         ],
         recommended_next_step:
-          "Fix worsening items before the next MOT to reduce failure risk.",
+          "Fix critical items and budget for expected costs before booking your MOT.",
       },
       actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
       meta: { request_id: id, tool_calls },
