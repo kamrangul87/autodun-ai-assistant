@@ -191,6 +191,13 @@ type MotHistory = {
   registrationDate?: string;
   motTests?: MotTest[];
 };
+type ThemeYearStat = {
+  first_seen: number;
+  last_seen: number;
+  count: number;
+  years: number[];
+};
+
 
 const MOT_HISTORY_API_URL =
   process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
