@@ -54,7 +54,6 @@ const GUIDED_CHOICES: Array<{
 
 /** -------------------------
  * Helpers: parsing signals from analysis text
- * (works today without changing backend)
  * ------------------------ */
 function findFirstMatch(texts: string[], re: RegExp): string | null {
   for (const t of texts) {
@@ -65,7 +64,6 @@ function findFirstMatch(texts: string[], re: RegExp): string | null {
 }
 
 function parseRisk(texts: string[]) {
-  // Matches: "Risk score: 75/100 (HIGH)." or "Risk score: 100/100 (HIGH)."
   const m = findFirstMatch(texts, /Risk score:\s*\d{1,3}\/100\s*\((HIGH|MEDIUM|LOW)\)/i);
   if (!m) return null;
 
@@ -79,7 +77,6 @@ function parseRisk(texts: string[]) {
 }
 
 function parseReplacement(texts: string[]) {
-  // Matches: "Recommended replacement type: EV"
   const m = findFirstMatch(texts, /Recommended replacement type:\s*(EV|HYBRID|ICE)/i);
   if (!m) return null;
   const type = m.split(":")[1].trim().toUpperCase() as "EV" | "HYBRID" | "ICE";
@@ -87,7 +84,6 @@ function parseReplacement(texts: string[]) {
 }
 
 function parseDecision(texts: string[]) {
-  // Matches: "Decision: REPLACE" / "Decision: KEEP" / "Decision: CONSIDER_REPLACING"
   const m = findFirstMatch(texts, /Decision:\s*(REPLACE|KEEP|CONSIDER_REPLACING)/i);
   if (!m) return null;
   const value = m.split(":")[1].trim().toUpperCase() as "REPLACE" | "KEEP" | "CONSIDER_REPLACING";
@@ -95,7 +91,6 @@ function parseDecision(texts: string[]) {
 }
 
 function parseReadiness(texts: string[]) {
-  // Matches: "Readiness score: 62/100" or "MOT readiness: 62/100"
   const m = findFirstMatch(texts, /(Readiness score|MOT readiness):\s*\d{1,3}\/100/i);
   if (!m) return null;
   const scoreMatch = m.match(/:\s*(\d{1,3})\/100/i);
@@ -171,14 +166,186 @@ function ScoreCard({
   );
 }
 
+function ResultPanel({
+  title,
+  data,
+  loading,
+  showGuided,
+  onGuidedPick,
+}: {
+  title: string;
+  data: AgentResponse;
+  loading: boolean;
+  showGuided: boolean;
+  onGuidedPick: (prompt: string) => void;
+}) {
+  const sections = data.sections || {};
+  const analysis = Array.isArray(sections.analysis) ? sections.analysis : [];
+  const actions = Array.isArray(data.actions) ? data.actions : [];
+
+  const risk = parseRisk(analysis);
+  const readiness = parseReadiness(analysis);
+  const decision = parseDecision(analysis);
+  const replacement = parseReplacement(analysis);
+
+  return (
+    <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">{title}</h2>
+
+        {data?.meta?.tool_calls?.length ? (
+          <span className="text-xs text-slate-400">
+            Trace:{" "}
+            {data.meta.tool_calls
+              .map((t) => `${t.name}${t.ok ? "" : "(!)"} (${t.ms}ms)`)
+              .slice(0, 3)
+              .join(", ")}
+          </span>
+        ) : null}
+      </div>
+
+      {(risk || readiness || decision || replacement) ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {risk ? (
+            <ScoreCard
+              title="Risk"
+              value={`${risk.score}/100 (${risk.band})`}
+              sub="Derived from MOT history patterns"
+              tone={risk.band === "HIGH" ? "bad" : risk.band === "MEDIUM" ? "warn" : "good"}
+            />
+          ) : (
+            <ScoreCard title="Risk" value="—" sub="Not returned yet" tone="neutral" />
+          )}
+
+          {readiness ? (
+            <ScoreCard
+              title="MOT Readiness"
+              value={`${readiness.score}/100 (${readiness.band})`}
+              sub="How prepared the vehicle is for test"
+              tone={readiness.band === "GOOD" ? "good" : readiness.band === "OK" ? "warn" : "bad"}
+            />
+          ) : (
+            <ScoreCard title="MOT Readiness" value="—" sub="Not returned yet" tone="neutral" />
+          )}
+
+          {decision ? (
+            <ScoreCard
+              title="Decision"
+              value={decision.value}
+              sub="Keep vs replace recommendation"
+              tone={decision.value === "KEEP" ? "good" : decision.value === "CONSIDER_REPLACING" ? "warn" : "bad"}
+            />
+          ) : (
+            <ScoreCard title="Decision" value="—" sub="Not returned yet" tone="neutral" />
+          )}
+
+          {replacement ? (
+            <ScoreCard
+              title="Replacement Type"
+              value={replacement.type}
+              sub="EV vs Hybrid vs ICE"
+              tone={replacement.type === "EV" ? "good" : replacement.type === "HYBRID" ? "warn" : "neutral"}
+            />
+          ) : (
+            <ScoreCard title="Replacement Type" value="—" sub="Not returned yet" tone="neutral" />
+          )}
+        </div>
+      ) : null}
+
+      <Section title="Understanding your situation" body={safeText(sections.understanding)} />
+
+      <SectionList title="Analysis" items={analysis} />
+
+      <Section title="Recommended next step" body={safeText(sections.recommended_next_step)} />
+
+      {showGuided ? (
+        <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+          <div className="flex flex-col gap-1">
+            <h3 className="text-sm font-semibold text-slate-200">
+              Not sure what you mean? Choose a goal:
+            </h3>
+            <p className="text-xs text-slate-400">
+              These options add the minimum details needed for a confident route.
+            </p>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {GUIDED_CHOICES.map((c) => (
+              <button
+                key={c.label}
+                type="button"
+                disabled={loading}
+                onClick={() => onGuidedPick(c.prompt)}
+                className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:bg-slate-800 disabled:opacity-40"
+              >
+                <div className="text-sm font-semibold text-slate-100">{c.label}</div>
+                <div className="mt-1 text-xs text-slate-400">{c.hint}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-5">
+        <h3 className="text-sm font-semibold text-slate-200">Actions</h3>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {actions.length ? (
+            actions.map((a) => (
+              <a
+                key={a.label}
+                href={a.href}
+                target="_blank"
+                rel="noreferrer"
+                className={
+                  a.type === "primary"
+                    ? "rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950"
+                    : "rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                }
+              >
+                {a.label}
+              </a>
+            ))
+          ) : (
+            <>
+              <a
+                href="https://mot.autodun.com/"
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Open MOT Predictor
+              </a>
+              <a
+                href="https://ev.autodun.com/"
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Open EV Charger Finder
+              </a>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-slate-800 pt-4 text-xs text-slate-400">
+        Informational guidance only. Final MOT decisions are made by authorised MOT testing centres.
+      </div>
+    </section>
+  );
+}
+
 export default function AIAssistantPage() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [res, setRes] = useState<AgentResponse | null>(null);
-  const [err, setErr] = useState<string | null>(null);
 
-  // Keep last good response if a new run fails (better UX)
+  // ✅ Always keep the LATEST response here (even errors)
+  const [res, setRes] = useState<AgentResponse | null>(null);
+
+  // ✅ Keep last successful result separately (never replaces the latest)
   const [lastGood, setLastGood] = useState<AgentResponse | null>(null);
+
+  const [err, setErr] = useState<string | null>(null);
 
   const canRun = useMemo(() => text.trim().length >= 6 && !loading, [text, loading]);
 
@@ -188,8 +355,9 @@ export default function AIAssistantPage() {
 
     setErr(null);
     setLoading(true);
-    setRes(null);
 
+    // ✅ Clear only the visible error message, but DO NOT force fallback to old result
+    // We still show the last response until the new one arrives (better UX).
     try {
       const r = await fetch("/api/agent/run", {
         method: "POST",
@@ -202,25 +370,29 @@ export default function AIAssistantPage() {
 
       const data = (await r.json()) as AgentResponse;
 
+      // ✅ Always set latest response (even if r.ok is false)
+      setRes(data);
+
       if (!r.ok) {
         const msg =
           data?.error ||
           data?.sections?.recommended_next_step ||
           "Request failed. Please try again.";
-        throw new Error(msg);
+        setErr(msg);
+        return;
       }
 
-      setRes(data);
+      // ✅ If successful, update lastGood
       if (data?.status === "ok") setLastGood(data);
     } catch (e: any) {
       setErr(e?.message || "Something went wrong. Please try again.");
-      // fallback UI response (but keep lastGood visible below)
+      // ✅ Set a latest error response so UI shows error (not old result)
       setRes({
         status: "error",
         intent: "unknown_out_of_scope",
         sections: {
           understanding: "We could not complete the analysis.",
-          analysis: ["A temporary error occurred while running the agent."],
+          analysis: ["Network or server error occurred while running the agent."],
           recommended_next_step: "Please try again in a moment.",
         },
         actions: [
@@ -234,7 +406,8 @@ export default function AIAssistantPage() {
   }
 
   async function copyReport() {
-    const toCopy = buildCopyText(res || lastGood);
+    // ✅ Copy the LATEST response (not lastGood)
+    const toCopy = buildCopyText(res);
     if (!toCopy) return;
     try {
       await navigator.clipboard.writeText(toCopy);
@@ -252,20 +425,11 @@ export default function AIAssistantPage() {
     setErr(null);
   }
 
-  const effective = res?.status === "ok" ? res : lastGood || res;
-
-  const sections = effective?.sections || {};
-  const analysis = Array.isArray(sections.analysis) ? sections.analysis : [];
-  const actions = Array.isArray(effective?.actions) ? effective!.actions : [];
-
   const showGuided =
-    !!effective && (effective.status === "out_of_scope" || effective.intent === "unknown_out_of_scope");
+    !!res && (res.status === "out_of_scope" || res.intent === "unknown_out_of_scope");
 
-  // Parse scorecards from analysis (works even if backend is text-only)
-  const risk = parseRisk(analysis);
-  const readiness = parseReadiness(analysis);
-  const decision = parseDecision(analysis);
-  const replacement = parseReplacement(analysis);
+  const showingOldBecauseLatestFailed =
+    !!res && res.status !== "ok" && !!lastGood;
 
   return (
     <>
@@ -287,21 +451,21 @@ export default function AIAssistantPage() {
                 Beta
               </span>
 
-              {effective?.intent ? (
+              {res?.intent ? (
                 <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1 text-xs text-slate-200">
-                  {intentLabel(effective.intent)}
+                  {intentLabel(res.intent)}
                 </span>
               ) : null}
 
-              {effective?.status ? (
+              {res?.status ? (
                 <span className="rounded-full border border-slate-800 bg-slate-950/30 px-3 py-1 text-xs text-slate-200">
-                  {badgeForStatus(effective.status)}
+                  {badgeForStatus(res.status)}
                 </span>
               ) : null}
 
-              {effective?.meta?.request_id ? (
+              {res?.meta?.request_id ? (
                 <span className="ml-auto text-xs text-slate-500">
-                  Request: {effective.meta.request_id}
+                  Request: {res.meta.request_id}
                 </span>
               ) : null}
             </div>
@@ -361,7 +525,7 @@ export default function AIAssistantPage() {
               <button
                 type="button"
                 onClick={copyReport}
-                disabled={!effective || !effective.sections}
+                disabled={!res || !res.sections}
                 className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-40"
               >
                 Copy report
@@ -371,155 +535,37 @@ export default function AIAssistantPage() {
             </div>
           </section>
 
-          {effective ? (
-            <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold">Result</h2>
-
-                {effective?.meta?.tool_calls?.length ? (
-                  <span className="text-xs text-slate-400">
-                    Trace:{" "}
-                    {effective.meta.tool_calls
-                      .map((t) => `${t.name}${t.ok ? "" : "(!)"} (${t.ms}ms)`)
-                      .slice(0, 3)
-                      .join(", ")}
-                  </span>
-                ) : null}
-              </div>
-
-              {/* Scorecards (auto-detected from analysis lines) */}
-              {(risk || readiness || decision || replacement) ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {risk ? (
-                    <ScoreCard
-                      title="Risk"
-                      value={`${risk.score}/100 (${risk.band})`}
-                      sub="Derived from MOT history patterns"
-                      tone={risk.band === "HIGH" ? "bad" : risk.band === "MEDIUM" ? "warn" : "good"}
-                    />
-                  ) : (
-                    <ScoreCard title="Risk" value="—" sub="Not returned yet" tone="neutral" />
-                  )}
-
-                  {readiness ? (
-                    <ScoreCard
-                      title="MOT Readiness"
-                      value={`${readiness.score}/100 (${readiness.band})`}
-                      sub="How prepared the vehicle is for test"
-                      tone={readiness.band === "GOOD" ? "good" : readiness.band === "OK" ? "warn" : "bad"}
-                    />
-                  ) : (
-                    <ScoreCard title="MOT Readiness" value="—" sub="Not returned yet" tone="neutral" />
-                  )}
-
-                  {decision ? (
-                    <ScoreCard
-                      title="Decision"
-                      value={decision.value}
-                      sub="Keep vs replace recommendation"
-                      tone={decision.value === "KEEP" ? "good" : decision.value === "CONSIDER_REPLACING" ? "warn" : "bad"}
-                    />
-                  ) : (
-                    <ScoreCard title="Decision" value="—" sub="Not returned yet" tone="neutral" />
-                  )}
-
-                  {replacement ? (
-                    <ScoreCard
-                      title="Replacement Type"
-                      value={replacement.type}
-                      sub="EV vs Hybrid vs ICE"
-                      tone={replacement.type === "EV" ? "good" : replacement.type === "HYBRID" ? "warn" : "neutral"}
-                    />
-                  ) : (
-                    <ScoreCard title="Replacement Type" value="—" sub="Not returned yet" tone="neutral" />
-                  )}
+          {/* ✅ Latest result always shown */}
+          {res ? (
+            <>
+              {showingOldBecauseLatestFailed ? (
+                <div className="mt-4 rounded-2xl border border-amber-700/40 bg-amber-950/30 p-4 text-sm text-amber-200">
+                  Latest request did not return an OK result. Showing latest response, and your last successful result is displayed below.
                 </div>
               ) : null}
 
-              <Section title="Understanding your situation" body={safeText(sections.understanding)} />
+              <ResultPanel
+                title="Latest result"
+                data={res}
+                loading={loading}
+                showGuided={showGuided}
+                onGuidedPick={(prompt) => {
+                  setText(prompt);
+                  runAgent(prompt);
+                }}
+              />
+            </>
+          ) : null}
 
-              <SectionList title="Analysis" items={analysis} />
-
-              <Section title="Recommended next step" body={safeText(sections.recommended_next_step)} />
-
-              {/* Guided clarification */}
-              {showGuided ? (
-                <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
-                  <div className="flex flex-col gap-1">
-                    <h3 className="text-sm font-semibold text-slate-200">
-                      Not sure what you mean? Choose a goal:
-                    </h3>
-                    <p className="text-xs text-slate-400">
-                      These options add the minimum details needed for a confident route.
-                    </p>
-                  </div>
-
-                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    {GUIDED_CHOICES.map((c) => (
-                      <button
-                        key={c.label}
-                        type="button"
-                        disabled={loading}
-                        onClick={() => {
-                          setText(c.prompt);
-                          runAgent(c.prompt);
-                        }}
-                        className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:bg-slate-800 disabled:opacity-40"
-                      >
-                        <div className="text-sm font-semibold text-slate-100">{c.label}</div>
-                        <div className="mt-1 text-xs text-slate-400">{c.hint}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="mt-5">
-                <h3 className="text-sm font-semibold text-slate-200">Actions</h3>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {actions.length ? (
-                    actions.map((a) => (
-                      <a
-                        key={a.label}
-                        href={a.href}
-                        target="_blank"
-                        rel="noreferrer"
-                        className={
-                          a.type === "primary"
-                            ? "rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950"
-                            : "rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
-                        }
-                      >
-                        {a.label}
-                      </a>
-                    ))
-                  ) : (
-                    <>
-                      <a
-                        href="https://mot.autodun.com/"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
-                      >
-                        Open MOT Predictor
-                      </a>
-                      <a
-                        href="https://ev.autodun.com/"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
-                      >
-                        Open EV Charger Finder
-                      </a>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-6 border-t border-slate-800 pt-4 text-xs text-slate-400">
-                Informational guidance only. Final MOT decisions are made by authorised MOT testing centres.
-              </div>
-            </section>
+          {/* ✅ If latest is not OK, show lastGood separately */}
+          {res && res.status !== "ok" && lastGood ? (
+            <ResultPanel
+              title="Last successful result"
+              data={lastGood}
+              loading={loading}
+              showGuided={false}
+              onGuidedPick={() => {}}
+            />
           ) : null}
         </div>
       </main>
