@@ -212,25 +212,51 @@ function yearsSince(dateStr?: string): number | null {
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
 
-  if (s.includes("suspension") || s.includes("bush") || s.includes("arm") || s.includes("shock") || s.includes("strut"))
+  if (
+    s.includes("suspension") ||
+    s.includes("bush") ||
+    s.includes("arm") ||
+    s.includes("shock") ||
+    s.includes("strut")
+  )
     return "suspension";
-  if (s.includes("brake") || s.includes("disc") || s.includes("pad") || s.includes("pipe") || s.includes("hose"))
+  if (
+    s.includes("brake") ||
+    s.includes("disc") ||
+    s.includes("pad") ||
+    s.includes("pipe") ||
+    s.includes("hose")
+  )
     return "brakes";
   if (s.includes("tyre") || s.includes("tire") || s.includes("tread") || s.includes("sidewall"))
     return "tyres";
-  if (s.includes("bearing") || s.includes("wheel bearing"))
-    return "wheel_bearing";
-  if (s.includes("corrosion") || s.includes("rust") || s.includes("corroded") || s.includes("subframe") || s.includes("chassis"))
+  if (s.includes("bearing") || s.includes("wheel bearing")) return "wheel_bearing";
+  if (
+    s.includes("corrosion") ||
+    s.includes("rust") ||
+    s.includes("corroded") ||
+    s.includes("subframe") ||
+    s.includes("chassis")
+  )
     return "corrosion";
-  if (s.includes("emission") || s.includes("lambda") || s.includes("catalyst") || s.includes("dp") || s.includes("smoke"))
+  if (
+    s.includes("emission") ||
+    s.includes("lambda") ||
+    s.includes("catalyst") ||
+    s.includes("dp") ||
+    s.includes("smoke")
+  )
     return "emissions";
-  if (s.includes("oil") || s.includes("leak") || s.includes("fluid"))
-    return "leaks_fluids";
+  if (s.includes("oil") || s.includes("leak") || s.includes("fluid")) return "leaks_fluids";
   if (s.includes("light") || s.includes("lamp") || s.includes("headlamp") || s.includes("indicator"))
     return "lights_visibility";
 
   return "other";
 }
+
+/** ✅ FIX: strict band union for TypeScript */
+type RiskBand = "HIGH" | "MEDIUM" | "LOW";
+type MotRisk = { score: number; band: RiskBand };
 
 function scoreMotRisk(input: {
   ageYears?: number | null;
@@ -241,7 +267,7 @@ function scoreMotRisk(input: {
   dangerousCount: number;
   majorCount: number;
   repeatThemes: Record<string, number>;
-}) {
+}): MotRisk {
   let score = 20;
 
   // Age
@@ -273,7 +299,8 @@ function scoreMotRisk(input: {
 
   score = Math.max(0, Math.min(100, score));
 
-  const band = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
+  /** ✅ FIX: explicitly type band as RiskBand (not string) */
+  const band: RiskBand = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
 
   return { score, band };
 }
@@ -356,8 +383,10 @@ async function tool_get_mot_intelligence_v2(vrm: string): Promise<{
     if (t.theme === "suspension") actionPlan.push("Suspension/steering: inspect bushes, arms, shocks; fix play/noise.");
     else if (t.theme === "brakes") actionPlan.push("Brakes: check pads/discs/pipes; address corrosion/leaks early.");
     else if (t.theme === "tyres") actionPlan.push("Tyres: tread/sidewall; check alignment and pressures.");
-    else if (t.theme === "corrosion") actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
-    else if (t.theme === "emissions") actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
+    else if (t.theme === "corrosion")
+      actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
+    else if (t.theme === "emissions")
+      actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
     else actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
   }
 
@@ -387,6 +416,7 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   const age = input.vehicle_age_years ?? null;
   const miles = input.mileage ?? null;
 
+  // kept as-is (does not affect your build error)
   let risk: "LOW" | "MEDIUM" | "HIGHER" = "MEDIUM";
   if ((age !== null && age >= 12) || (miles !== null && miles >= 120000)) risk = "HIGHER";
   if (age !== null && miles !== null && age <= 4 && miles <= 40000) risk = "LOW";
@@ -465,8 +495,7 @@ function countFails(t: MotTestLike): number {
  * - MOT_PREDICTOR_API_URL = https://mot.autodun.com/api/mot-history
  */
 async function tool_get_mot_history(vrm: string) {
-  const base =
-    process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+  const base = process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
 
   const url = new URL(base);
   url.searchParams.set("vrm", vrm);
@@ -561,54 +590,55 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const miles = extractMileage(text);
 
       // ✅ LIVE MOT tool call when VRM exists
-     // If user provided VRM, run MOT Intelligence v2 (live DVSA via your proxy)
-if (vrm) {
-  const tMot = Date.now();
-  const intel = await tool_get_mot_intelligence_v2(vrm);
-  tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
+      // If user provided VRM, run MOT Intelligence v2 (live DVSA via your proxy)
+      if (vrm) {
+        const tMot = Date.now();
+        const intel = await tool_get_mot_intelligence_v2(vrm);
+        tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
 
-  const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(intel.latest.completedDate || "n/a")}).`;
-  const expiryLine = intel.latest.expiryDate ? `Expiry: ${intel.latest.expiryDate}.` : "";
-  const mileageLine =
-    typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
+        const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(
+          intel.latest.completedDate || "n/a"
+        )}).`;
+        const expiryLine = intel.latest.expiryDate ? `Expiry: ${intel.latest.expiryDate}.` : "";
+        const mileageLine =
+          typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
 
-  const countsLine = `Counts (all tests): Advisories ${intel.counts.advisories}, Fails ${intel.counts.fails}, Major ${intel.counts.major}, Dangerous ${intel.counts.dangerous}.`;
+        const countsLine = `Counts (all tests): Advisories ${intel.counts.advisories}, Fails ${intel.counts.fails}, Major ${intel.counts.major}, Dangerous ${intel.counts.dangerous}.`;
 
-  const themeLine =
-    intel.topThemes.length > 0
-      ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
-      : "Repeat themes: none detected.";
+        const themeLine =
+          intel.topThemes.length > 0
+            ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
+            : "Repeat themes: none detected.";
 
-  const riskLine = `Risk score: ${intel.risk.score}/100 (${intel.risk.band}).`;
+        const riskLine = `Risk score: ${intel.risk.score}/100 (${intel.risk.band}).`;
 
-  const out: AgentResponse = {
-    status: "ok",
-    intent,
-    sections: {
-      understanding: `You want MOT intelligence for VRM ${vrm}.`,
-      analysis: [
-        latestLine,
-        ...(expiryLine ? [expiryLine] : []),
-        ...(mileageLine ? [mileageLine] : []),
-        countsLine,
-        themeLine,
-        riskLine,
-        "Priority action plan:",
-        ...intel.actionPlan.slice(0, 3).map((x) => `• ${x}`),
-      ],
-      recommended_next_step:
-        "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
-    },
-    actions: [
-      { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
-      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-    ],
-    meta: { request_id: id, tool_calls },
-  };
+        const out: AgentResponse = {
+          status: "ok",
+          intent,
+          sections: {
+            understanding: `You want MOT intelligence for VRM ${vrm}.`,
+            analysis: [
+              latestLine,
+              ...(expiryLine ? [expiryLine] : []),
+              ...(mileageLine ? [mileageLine] : []),
+              countsLine,
+              themeLine,
+              riskLine,
+              "Priority action plan:",
+              ...intel.actionPlan.slice(0, 3).map((x) => `• ${x}`),
+            ],
+            recommended_next_step:
+              "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
+          },
+          actions: [
+            { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+          ],
+          meta: { request_id: id, tool_calls },
+        };
 
-  return res.status(200).json(out);
-}
-
+        return res.status(200).json(out);
+      }
 
       // If no VRM, use age/mileage heuristic
       if (age === null && miles === null) {
@@ -694,10 +724,7 @@ if (vrm) {
               }),
               "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
             ]
-          : [
-              `No stations were returned for that postcode.`,
-              "Open EV Charger Finder to search on the map.",
-            ];
+          : [`No stations were returned for that postcode.`, "Open EV Charger Finder to search on the map."];
 
       const out: AgentResponse = {
         status: "ok",
@@ -742,10 +769,7 @@ if (vrm) {
       intent,
       sections: {
         understanding: "We could not complete the analysis.",
-        analysis: [
-          "A temporary error occurred while running the agent.",
-          `Debug hint: ${String(e?.message || e || "unknown error")}`,
-        ],
+        analysis: ["A temporary error occurred while running the agent.", `Debug hint: ${String(e?.message || e || "unknown error")}`],
         recommended_next_step: "Please try again.",
       },
       actions: [
