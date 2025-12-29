@@ -29,23 +29,27 @@ const EXAMPLES = [
   "chargers near SW1A 1AA",
 ] as const;
 
-const GUIDED_CHOICES: Array<{ label: string; prompt: string; hint: string }> = [
-  {
-    label: "MOT help",
-    prompt: "My car is 10 years old with 120k miles — what should I check before MOT?",
-    hint: "Adds age + mileage to reduce uncertainty",
-  },
-  {
-    label: "EV charging near me",
-    prompt: "chargers near SW1A 1AA",
-    hint: "Add your postcode for nearby chargers",
-  },
-  {
-    label: "Used car checks",
-    prompt: "I’m buying a used car — what should I check before purchase and in MOT history?",
-    hint: "Clarifies the buying workflow",
-  },
-];
+const GUIDED_CHOICES: Array<{ label: string; prompt: string; hint: string; intent: AgentIntent }> =
+  [
+    {
+      label: "MOT help",
+      prompt: "My car is 10 years old with 120k miles — what should I check before MOT?",
+      hint: "Adds age + mileage to reduce uncertainty",
+      intent: "mot_preparation",
+    },
+    {
+      label: "EV charging near me",
+      prompt: "chargers near SW1A 1AA",
+      hint: "Add your postcode for nearby chargers",
+      intent: "ev_charging_readiness",
+    },
+    {
+      label: "Used car checks",
+      prompt: "I’m buying a used car — what should I check before purchase and in MOT history?",
+      hint: "Clarifies the buying workflow",
+      intent: "used_car_buyer",
+    },
+  ];
 
 function safeText(x: any): string {
   if (typeof x === "string") return x;
@@ -57,30 +61,143 @@ function safeArray(x: any): string[] {
   return Array.isArray(x) ? x.map((v) => safeText(v)) : [];
 }
 
-/* =========================
-   ✅ NEW: minimal endpoint router
-========================= */
-function pickEndpoint(prompt: string): string {
-  const t = (prompt || "").toLowerCase();
+/* =======================
+   Tiny Icons (no deps)
+======================= */
 
-  // EV intent → EV agent
-  if (["charger", "charging", "postcode", "near me", "ev", "electric"].some((k) => t.includes(k))) {
-    return "/api/agent/ev";
+function Icon({
+  name,
+  className = "h-4 w-4",
+}: {
+  name:
+    | "car"
+    | "bolt"
+    | "search"
+    | "info"
+    | "check"
+    | "warn"
+    | "x"
+    | "copy"
+    | "external"
+    | "spark"
+    | "id";
+  className?: string;
+}) {
+  const common = { className, fill: "none", stroke: "currentColor", strokeWidth: 2 };
+  switch (name) {
+    case "car":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M3 13l2-6a3 3 0 0 1 2.84-2h8.32A3 3 0 0 1 21 7l2 6" />
+          <path d="M5 13h14a2 2 0 0 1 2 2v3a1 1 0 0 1-1 1h-1" />
+          <path d="M5 13a2 2 0 0 0-2 2v3a1 1 0 0 0 1 1h1" />
+          <circle cx="7" cy="18" r="2" />
+          <circle cx="17" cy="18" r="2" />
+          <path d="M7 11h10" />
+        </svg>
+      );
+    case "bolt":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M13 2L3 14h7l-1 8 12-14h-7l-1-6z" />
+        </svg>
+      );
+    case "search":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-3.5-3.5" />
+        </svg>
+      );
+    case "info":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 10v7" />
+          <path d="M12 7h.01" />
+        </svg>
+      );
+    case "check":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+      );
+    case "warn":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M12 2l10 18H2L12 2z" />
+          <path d="M12 9v5" />
+          <path d="M12 17h.01" />
+        </svg>
+      );
+    case "x":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M18 6L6 18" />
+          <path d="M6 6l12 12" />
+        </svg>
+      );
+    case "copy":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M9 9h10v10H9z" />
+          <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+        </svg>
+      );
+    case "external":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M14 3h7v7" />
+          <path d="M10 14L21 3" />
+          <path d="M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6" />
+        </svg>
+      );
+    case "spark":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M12 2l1.5 5L19 9l-5.5 2L12 16l-1.5-5L5 9l5.5-2L12 2z" />
+          <path d="M19 14l.8 2.6L22 18l-2.2 1.4L19 22l-.8-2.6L16 18l2.2-1.4L19 14z" />
+        </svg>
+      );
+    case "id":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M7 15h6" />
+          <path d="M7 11h10" />
+          <path d="M17 15h0.01" />
+        </svg>
+      );
+    default:
+      return null;
   }
-
-  // Used car intent → used agent
-  if (["used car", "buying", "purchase", "v5", "hpi", "cat s", "cat n"].some((k) => t.includes(k))) {
-    return "/api/agent/used";
-  }
-
-  // Default → MOT layered agent
-  return "/api/agent/run";
 }
 
-function Badge({ children }: { children: React.ReactNode }) {
+function intentMeta(intent: AgentIntent) {
+  if (intent === "mot_preparation")
+    return { label: "MOT Intelligence", icon: "car" as const };
+  if (intent === "ev_charging_readiness")
+    return { label: "EV Charging", icon: "bolt" as const };
+  if (intent === "used_car_buyer") return { label: "Used Car", icon: "search" as const };
+  return { label: "Unknown", icon: "info" as const };
+}
+
+/* =======================
+   UI Bits
+======================= */
+
+function Badge({
+  children,
+  icon,
+}: {
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+}) {
   return (
-    <span className="rounded-full border border-slate-800 bg-slate-950/40 px-3 py-1 text-xs text-slate-200">
-      {children}
+    <span className="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-950/40 px-3 py-1 text-xs text-slate-200">
+      {icon ? <span className="text-slate-300">{icon}</span> : null}
+      <span>{children}</span>
     </span>
   );
 }
@@ -89,22 +206,39 @@ function StatusChip({ status }: { status: AgentStatus }) {
   const base =
     "rounded-full px-3 py-1 text-xs font-medium border inline-flex items-center gap-2";
   if (status === "ok")
-    return <span className={`${base} border-emerald-900 bg-emerald-950/40 text-emerald-200`}>OK</span>;
+    return (
+      <span className={`${base} border-emerald-900 bg-emerald-950/40 text-emerald-200`}>
+        <Icon name="check" className="h-4 w-4" />
+        OK
+      </span>
+    );
   if (status === "needs_clarification")
-    return <span className={`${base} border-amber-900 bg-amber-950/40 text-amber-200`}>Needs clarification</span>;
+    return (
+      <span className={`${base} border-amber-900 bg-amber-950/40 text-amber-200`}>
+        <Icon name="warn" className="h-4 w-4" />
+        Needs clarification
+      </span>
+    );
   if (status === "out_of_scope")
-    return <span className={`${base} border-slate-700 bg-slate-950/40 text-slate-200`}>Out of scope</span>;
-  return <span className={`${base} border-red-900 bg-red-950/40 text-red-200`}>Error</span>;
+    return (
+      <span className={`${base} border-slate-700 bg-slate-950/40 text-slate-200`}>
+        <Icon name="info" className="h-4 w-4" />
+        Out of scope
+      </span>
+    );
+  return (
+    <span className={`${base} border-red-900 bg-red-950/40 text-red-200`}>
+      <Icon name="x" className="h-4 w-4" />
+      Error
+    </span>
+  );
 }
 
 function IntentChip({ intent }: { intent: AgentIntent }) {
-  const map: Record<AgentIntent, string> = {
-    mot_preparation: "MOT Intelligence",
-    ev_charging_readiness: "EV Charging",
-    used_car_buyer: "Used Car",
-    unknown_out_of_scope: "Unknown",
-  };
-  return <Badge>{map[intent] ?? "Unknown"}</Badge>;
+  const meta = intentMeta(intent);
+  return (
+    <Badge icon={<Icon name={meta.icon} className="h-4 w-4" />}>{meta.label}</Badge>
+  );
 }
 
 export default function AIAssistantPage() {
@@ -155,7 +289,7 @@ export default function AIAssistantPage() {
     setLatestRes(null);
 
     try {
-      const r = await fetch(pickEndpoint(finalText), {
+      const r = await fetch("/api/agent/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -183,10 +317,15 @@ export default function AIAssistantPage() {
             recommended_next_step:
               data?.sections?.recommended_next_step ?? "Please try again.",
           },
-          actions: data?.actions ?? [
-            { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
-            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
-          ],
+          actions:
+            data?.actions ?? [
+              { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
+              {
+                label: "Open EV Charger Finder",
+                href: "https://ev.autodun.com/",
+                type: "secondary",
+              },
+            ],
           meta: data?.meta,
         });
         throw new Error(
@@ -242,14 +381,29 @@ export default function AIAssistantPage() {
       latest_response: latestRes,
       last_successful_ok_response: lastOkRes,
     };
-    navigator.clipboard
-      .writeText(JSON.stringify(payload, null, 2))
-      .catch(() => {});
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).catch(() => {});
+  }
+
+  // Tiny extra: copy ONLY the latest rendered content (quick share)
+  function copyLatestResultText() {
+    if (!latestRes) return;
+    const lines: string[] = [];
+    lines.push(`Intent: ${intentMeta(latestRes.intent).label}`);
+    lines.push(`Status: ${latestRes.status}`);
+    const u = safeText(latestRes.sections?.understanding);
+    if (u) lines.push(`\nUnderstanding:\n${u}`);
+    const a = safeArray(latestRes.sections?.analysis);
+    if (a.length) lines.push(`\nAnalysis:\n${a.map((x) => `- ${x}`).join("\n")}`);
+    const n = safeText(latestRes.sections?.recommended_next_step);
+    if (n) lines.push(`\nNext step:\n${n}`);
+    navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
   }
 
   const showGuided =
     !!latestRes &&
-    (latestRes.status === "out_of_scope" || latestRes.intent === "unknown_out_of_scope" || latestRes.status === "needs_clarification");
+    (latestRes.status === "out_of_scope" ||
+      latestRes.intent === "unknown_out_of_scope" ||
+      latestRes.status === "needs_clarification");
 
   const traceText =
     latestRes?.meta?.tool_calls?.length
@@ -258,6 +412,10 @@ export default function AIAssistantPage() {
           .slice(0, 3)
           .join(", ")}`
       : null;
+
+  // Tiny MOT-specific helper hint (only when we need clarification)
+  const needsVrmHint =
+    latestRes?.status === "needs_clarification" && latestRes.intent === "mot_preparation";
 
   return (
     <>
@@ -273,17 +431,28 @@ export default function AIAssistantPage() {
         <div className="mx-auto max-w-3xl px-4 py-10">
           <header className="mb-6">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight">Autodun AI Assistant</h1>
+              <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/40">
+                  <Icon name="spark" className="h-5 w-5 text-slate-200" />
+                </span>
+                Autodun AI Assistant
+              </h1>
+
               <Badge>Beta</Badge>
               {latestRes ? <IntentChip intent={latestRes.intent} /> : null}
               {latestRes ? <StatusChip status={latestRes.status} /> : null}
+
               {latestRes?.meta?.request_id ? (
-                <span className="text-xs text-slate-400">Request: {latestRes.meta.request_id}</span>
+                <span className="inline-flex items-center gap-2 text-xs text-slate-400">
+                  <Icon name="id" className="h-4 w-4" />
+                  Request: {latestRes.meta.request_id}
+                </span>
               ) : null}
             </div>
 
             <p className="mt-2 text-slate-300">
-              Tell your goal — the assistant routes you to the right Autodun tool and explains the decision.
+              Tell your goal — the assistant routes you to the right Autodun tool and explains the
+              decision.
             </p>
 
             {lastPrompt ? (
@@ -342,8 +511,9 @@ export default function AIAssistantPage() {
                 type="button"
                 onClick={copyReport}
                 disabled={!latestRes && !lastOkRes}
-                className="rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-40"
               >
+                <Icon name="copy" className="h-4 w-4" />
                 Copy report
               </button>
 
@@ -354,10 +524,42 @@ export default function AIAssistantPage() {
           {/* ✅ Latest response always shown (no stale “old result”) */}
           {latestRes ? (
             <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold">Latest result</h2>
-                {traceText ? <span className="text-xs text-slate-400">{traceText}</span> : null}
+
+                <div className="flex items-center gap-2">
+                  {traceText ? <span className="text-xs text-slate-400">{traceText}</span> : null}
+
+                  <button
+                    type="button"
+                    onClick={copyLatestResultText}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+                    title="Copy the latest result text"
+                  >
+                    <Icon name="copy" className="h-4 w-4" />
+                    Copy result
+                  </button>
+                </div>
               </div>
+
+              {needsVrmHint ? (
+                <div className="mb-4 rounded-2xl border border-amber-900/40 bg-amber-950/30 p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 text-amber-200">
+                      <Icon name="warn" className="h-5 w-5" />
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold text-amber-200">
+                        Quick tip: paste your VRM to run MOT Intelligence
+                      </p>
+                      <p className="mt-1 text-xs text-amber-200/80">
+                        Example: <span className="font-semibold">ML58FOU</span> or{" "}
+                        <span className="font-semibold">MOT intelligence for ML58FOU</span>.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               <Section
                 title="Understanding your situation"
@@ -381,21 +583,29 @@ export default function AIAssistantPage() {
                   </div>
 
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    {GUIDED_CHOICES.map((c) => (
-                      <button
-                        key={c.label}
-                        type="button"
-                        disabled={loading}
-                        onClick={() => {
-                          setText(c.prompt);
-                          runAgent(c.prompt);
-                        }}
-                        className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:bg-slate-800 disabled:opacity-40"
-                      >
-                        <div className="text-sm font-semibold text-slate-100">{c.label}</div>
-                        <div className="mt-1 text-xs text-slate-400">{c.hint}</div>
-                      </button>
-                    ))}
+                    {GUIDED_CHOICES.map((c) => {
+                      const meta = intentMeta(c.intent);
+                      return (
+                        <button
+                          key={c.label}
+                          type="button"
+                          disabled={loading}
+                          onClick={() => {
+                            setText(c.prompt);
+                            runAgent(c.prompt);
+                          }}
+                          className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-left hover:bg-slate-800 disabled:opacity-40"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/30 text-slate-200">
+                              <Icon name={meta.icon} className="h-4 w-4" />
+                            </span>
+                            <div className="text-sm font-semibold text-slate-100">{c.label}</div>
+                          </div>
+                          <div className="mt-2 text-xs text-slate-400">{c.hint}</div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}
@@ -412,11 +622,12 @@ export default function AIAssistantPage() {
                         rel="noreferrer"
                         className={
                           a.type === "primary"
-                            ? "rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950"
-                            : "rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                            ? "inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950"
+                            : "inline-flex items-center gap-2 rounded-xl border border-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
                         }
                       >
                         {a.label}
+                        <Icon name="external" className="h-4 w-4" />
                       </a>
                     ))}
                   </div>
@@ -424,7 +635,8 @@ export default function AIAssistantPage() {
               ) : null}
 
               <div className="mt-6 border-t border-slate-800 pt-4 text-xs text-slate-400">
-                Informational guidance only. Final MOT decisions are made by authorised MOT testing centres.
+                Informational guidance only. Final MOT decisions are made by authorised MOT testing
+                centres.
               </div>
             </section>
           ) : null}
@@ -438,11 +650,11 @@ export default function AIAssistantPage() {
                   Shown for reference only (latest result is above).
                 </span>
               </div>
-              <Section
-                title="Understanding"
-                body={safeText(lastOkRes.sections?.understanding)}
+              <Section title="Understanding" body={safeText(lastOkRes.sections?.understanding)} />
+              <SectionList
+                title="Analysis"
+                items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)}
               />
-              <SectionList title="Analysis" items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)} />
             </section>
           ) : null}
         </div>
@@ -456,7 +668,7 @@ function Section({ title, body }: { title: string; body: string }) {
   return (
     <div className="mt-4">
       <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-slate-200 whitespace-pre-wrap">{body}</p>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-200">{body}</p>
     </div>
   );
 }
