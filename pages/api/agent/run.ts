@@ -162,6 +162,226 @@ function extractPostcode(text: string): string | null {
 // -----------------------
 // Tools
 // -----------------------
+// -----------------------
+// MOT Intelligence v2
+// -----------------------
+
+type MotDefect = {
+  dangerous?: boolean;
+  text?: string;
+  type?: string; // ADVISORY | FAIL | MAJOR | DANGEROUS (varies)
+};
+
+type MotTest = {
+  completedDate?: string;
+  expiryDate?: string;
+  testResult?: string; // PASSED / FAILED
+  odometerValue?: string; // sometimes string
+  odometerUnit?: string; // MI
+  defects?: MotDefect[];
+};
+
+type MotHistory = {
+  registration?: string;
+  make?: string;
+  model?: string;
+  fuelType?: string;
+  primaryColour?: string;
+  firstUsedDate?: string;
+  registrationDate?: string;
+  motTests?: MotTest[];
+};
+
+const MOT_HISTORY_API_URL =
+  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+function toNum(v: any): number | null {
+  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+function yearsSince(dateStr?: string): number | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  return Math.max(0, diff / (365.25 * 24 * 3600 * 1000));
+}
+
+function themeFromText(t: string): string {
+  const s = (t || "").toLowerCase();
+
+  if (s.includes("suspension") || s.includes("bush") || s.includes("arm") || s.includes("shock") || s.includes("strut"))
+    return "suspension";
+  if (s.includes("brake") || s.includes("disc") || s.includes("pad") || s.includes("pipe") || s.includes("hose"))
+    return "brakes";
+  if (s.includes("tyre") || s.includes("tire") || s.includes("tread") || s.includes("sidewall"))
+    return "tyres";
+  if (s.includes("bearing") || s.includes("wheel bearing"))
+    return "wheel_bearing";
+  if (s.includes("corrosion") || s.includes("rust") || s.includes("corroded") || s.includes("subframe") || s.includes("chassis"))
+    return "corrosion";
+  if (s.includes("emission") || s.includes("lambda") || s.includes("catalyst") || s.includes("dp") || s.includes("smoke"))
+    return "emissions";
+  if (s.includes("oil") || s.includes("leak") || s.includes("fluid"))
+    return "leaks_fluids";
+  if (s.includes("light") || s.includes("lamp") || s.includes("headlamp") || s.includes("indicator"))
+    return "lights_visibility";
+
+  return "other";
+}
+
+function scoreMotRisk(input: {
+  ageYears?: number | null;
+  mileage?: number | null;
+  latestResult?: string | null;
+  totalFails: number;
+  totalAdvisories: number;
+  dangerousCount: number;
+  majorCount: number;
+  repeatThemes: Record<string, number>;
+}) {
+  let score = 20;
+
+  // Age
+  if (typeof input.ageYears === "number") {
+    if (input.ageYears >= 15) score += 20;
+    else if (input.ageYears >= 10) score += 12;
+    else if (input.ageYears >= 6) score += 6;
+  }
+
+  // Mileage
+  if (typeof input.mileage === "number") {
+    if (input.mileage >= 160000) score += 18;
+    else if (input.mileage >= 120000) score += 12;
+    else if (input.mileage >= 80000) score += 7;
+  }
+
+  // Latest result
+  if ((input.latestResult || "").toUpperCase().includes("FAIL")) score += 18;
+
+  // Severity counts
+  score += Math.min(20, input.totalFails * 3);
+  score += Math.min(15, input.totalAdvisories * 1);
+  score += Math.min(25, input.dangerousCount * 10);
+  score += Math.min(15, input.majorCount * 5);
+
+  // Repeat themes (repeat issues = higher risk)
+  const repeats = Object.values(input.repeatThemes).filter((n) => n >= 2).length;
+  score += Math.min(10, repeats * 3);
+
+  score = Math.max(0, Math.min(100, score));
+
+  const band = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
+
+  return { score, band };
+}
+
+function pickTopThemes(repeatThemes: Record<string, number>, topN = 3) {
+  return Object.entries(repeatThemes)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topN)
+    .map(([k, v]) => ({ theme: k, count: v }));
+}
+
+async function tool_get_mot_intelligence_v2(vrm: string): Promise<{
+  vrm: string;
+  vehicle: { make?: string; model?: string; fuelType?: string; colour?: string; ageYears?: number | null };
+  latest: { result?: string; completedDate?: string; expiryDate?: string; mileage?: number | null };
+  counts: { fails: number; advisories: number; dangerous: number; major: number };
+  topThemes: Array<{ theme: string; count: number }>;
+  risk: { score: number; band: "LOW" | "MEDIUM" | "HIGH" };
+  actionPlan: string[];
+}> {
+  const url = new URL(MOT_HISTORY_API_URL);
+  url.searchParams.set("vrm", vrm);
+
+  const r = await fetch(url.toString(), { method: "GET" });
+  if (!r.ok) throw new Error(`MOT history fetch failed (${r.status})`);
+
+  const data = (await r.json()) as MotHistory;
+
+  const tests = Array.isArray(data?.motTests) ? data.motTests : [];
+  const latest = tests[0] || {}; // DVSA usually returns newest first (your screenshot shows latest first)
+
+  const ageYears = yearsSince(data.firstUsedDate || data.registrationDate);
+  const mileage = toNum(latest?.odometerValue);
+
+  let fails = 0;
+  let advisories = 0;
+  let dangerous = 0;
+  let major = 0;
+
+  const themeCounts: Record<string, number> = {};
+
+  for (const t of tests) {
+    const result = (t?.testResult || "").toUpperCase();
+    if (result.includes("FAIL")) fails++;
+
+    const defects = Array.isArray(t?.defects) ? t.defects : [];
+    for (const d of defects) {
+      const dtype = (d?.type || "").toUpperCase();
+      const txt = d?.text || "";
+
+      // counts
+      if (dtype.includes("ADVISORY")) advisories++;
+      if (dtype.includes("DANG")) dangerous++;
+      if (dtype.includes("MAJOR")) major++;
+
+      // theme aggregation (only if text exists)
+      if (txt) {
+        const theme = themeFromText(txt);
+        themeCounts[theme] = (themeCounts[theme] || 0) + 1;
+      }
+    }
+  }
+
+  const topThemes = pickTopThemes(themeCounts, 3);
+  const latestResult = latest?.testResult || null;
+
+  const risk = scoreMotRisk({
+    ageYears,
+    mileage,
+    latestResult,
+    totalFails: fails,
+    totalAdvisories: advisories,
+    dangerousCount: dangerous,
+    majorCount: major,
+    repeatThemes: themeCounts,
+  });
+
+  const actionPlan: string[] = [];
+  for (const t of topThemes) {
+    if (t.theme === "suspension") actionPlan.push("Suspension/steering: inspect bushes, arms, shocks; fix play/noise.");
+    else if (t.theme === "brakes") actionPlan.push("Brakes: check pads/discs/pipes; address corrosion/leaks early.");
+    else if (t.theme === "tyres") actionPlan.push("Tyres: tread/sidewall; check alignment and pressures.");
+    else if (t.theme === "corrosion") actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
+    else if (t.theme === "emissions") actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
+    else actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
+  }
+
+  return {
+    vrm,
+    vehicle: {
+      make: data?.make,
+      model: data?.model,
+      fuelType: data?.fuelType,
+      colour: data?.primaryColour,
+      ageYears,
+    },
+    latest: {
+      result: latest?.testResult,
+      completedDate: latest?.completedDate,
+      expiryDate: latest?.expiryDate,
+      mileage,
+    },
+    counts: { fails, advisories, dangerous, major },
+    topThemes,
+    risk,
+    actionPlan: actionPlan.length ? actionPlan : ["Open MOT Predictor to review advisories and prioritise repairs."],
+  };
+}
 
 async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mileage?: number }) {
   const age = input.vehicle_age_years ?? null;
@@ -341,39 +561,54 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const miles = extractMileage(text);
 
       // ✅ LIVE MOT tool call when VRM exists
-      if (vrm) {
-        const tMot = Date.now();
-        const mot = await tool_get_mot_history(vrm);
-        tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
+     // If user provided VRM, run MOT Intelligence v2 (live DVSA via your proxy)
+if (vrm) {
+  const tMot = Date.now();
+  const intel = await tool_get_mot_intelligence_v2(vrm);
+  tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
 
-        const latestDateIso =
-          mot.latestDateMs > 0 ? new Date(mot.latestDateMs).toISOString() : "unknown date";
+  const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(intel.latest.completedDate || "n/a")}).`;
+  const expiryLine = intel.latest.expiryDate ? `Expiry: ${intel.latest.expiryDate}.` : "";
+  const mileageLine =
+    typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
 
-        const out: AgentResponse = {
-          status: "ok",
-          intent,
-          sections: {
-            understanding: `You want MOT risk for VRM ${vrm}.`,
-            analysis: [
-              `Latest MOT: ${mot.latestResult} (${latestDateIso}). Advisories: ${mot.latestAdvisories}. Fails: ${mot.latestFails}.`,
-              "Focus on repeat themes: brakes, suspension, tyres, emissions/warning lights.",
-              "Fix the top wear items before test day to reduce failure probability.",
-            ],
-            recommended_next_step:
-              "Open MOT Predictor to view full MOT history and recommended actions.",
-          },
-          actions: [
-            {
-              label: "Open MOT Predictor",
-              href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`,
-              type: "primary",
-            },
-            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-          ],
-          meta: { request_id: id, tool_calls },
-        };
-        return res.status(200).json(out);
-      }
+  const countsLine = `Counts (all tests): Advisories ${intel.counts.advisories}, Fails ${intel.counts.fails}, Major ${intel.counts.major}, Dangerous ${intel.counts.dangerous}.`;
+
+  const themeLine =
+    intel.topThemes.length > 0
+      ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
+      : "Repeat themes: none detected.";
+
+  const riskLine = `Risk score: ${intel.risk.score}/100 (${intel.risk.band}).`;
+
+  const out: AgentResponse = {
+    status: "ok",
+    intent,
+    sections: {
+      understanding: `You want MOT intelligence for VRM ${vrm}.`,
+      analysis: [
+        latestLine,
+        ...(expiryLine ? [expiryLine] : []),
+        ...(mileageLine ? [mileageLine] : []),
+        countsLine,
+        themeLine,
+        riskLine,
+        "Priority action plan:",
+        ...intel.actionPlan.slice(0, 3).map((x) => `• ${x}`),
+      ],
+      recommended_next_step:
+        "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: { request_id: id, tool_calls },
+  };
+
+  return res.status(200).json(out);
+}
+
 
       // If no VRM, use age/mileage heuristic
       if (age === null && miles === null) {
