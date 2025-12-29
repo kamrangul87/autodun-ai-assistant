@@ -36,11 +36,11 @@ function requestId() {
 
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
-  if (["visa","job","health","bitcoin"].some((k) => t.includes(k)))
+  if (["visa","job","health","bitcoin"].some(k => t.includes(k)))
     return "unknown_out_of_scope";
-  if (["ev","charging","postcode"].some((k) => t.includes(k)))
+  if (["ev","charging","postcode"].some(k => t.includes(k)))
     return "ev_charging_readiness";
-  if (["buy","used","v5","hpi"].some((k) => t.includes(k)))
+  if (["buy","used","v5","hpi"].some(k => t.includes(k)))
     return "used_car_buyer";
   return "mot_preparation";
 }
@@ -94,9 +94,8 @@ type RiskBand = "LOW" | "MEDIUM" | "HIGH";
 function yearsSince(d?: string): number | null {
   if (!d) return null;
   const dt = new Date(d);
-  return Number.isNaN(dt.getTime())
-    ? null
-    : (Date.now() - dt.getTime()) / (365.25 * 24 * 3600 * 1000);
+  if (Number.isNaN(dt.getTime())) return null;
+  return (Date.now() - dt.getTime()) / (365.25 * 24 * 3600 * 1000);
 }
 
 /* =======================
@@ -105,18 +104,19 @@ function yearsSince(d?: string): number | null {
 
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
-  const has = (...k: string[]) => k.some((x) => s.includes(x));
-  if (has("tyre","tread")) return "tyres";
-  if (has("suspension","bush","shock")) return "suspension";
-  if (has("brake","disc","pad")) return "brakes";
+  const has = (...k: string[]) => k.some(x => s.includes(x));
+
+  if (has("tyre","tread","sidewall")) return "tyres";
+  if (has("suspension","bush","shock","arm","ball joint")) return "suspension";
+  if (has("brake","disc","pad","caliper")) return "brakes";
   if (has("exhaust","silencer","flexi")) return "exhaust";
-  if (has("corrosion","rust","subframe")) return "corrosion";
-  if (has("emission","lambda","dpf")) return "emissions";
+  if (has("corrosion","rust","subframe","chassis")) return "corrosion";
+  if (has("emission","lambda","dpf","egr")) return "emissions";
   return "other";
 }
 
 /* =======================
-   Risk Scoring
+   Risk Scoring (Layer-1)
 ======================= */
 
 function scoreMotRisk(input: {
@@ -126,29 +126,35 @@ function scoreMotRisk(input: {
   repeatThemes: Record<string, number>;
 }): { score: number; band: RiskBand } {
   let score = 20;
+
   if (input.ageYears && input.ageYears >= 10) score += 15;
   if (input.mileage && input.mileage >= 120000) score += 15;
   if ((input.latestResult || "").includes("FAIL")) score += 20;
-  score += Math.min(30, Object.values(input.repeatThemes).filter((n) => n >= 2).length * 5);
+
+  score += Math.min(
+    30,
+    Object.values(input.repeatThemes).filter(n => n >= 2).length * 5
+  );
+
   score = Math.min(100, score);
   return { score, band: score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW" };
 }
 
 /* =======================
-   FIX vs IGNORE ENGINE (Layer-2)
+   FIX vs MONITOR (Layer-2)
 ======================= */
 
 function decideFixOrIgnore(
-  patterns: Array<{
+  patterns: {
     theme: string;
     repeat_count: number;
     last_seen_year: number;
     trend: "worsening" | "stable" | "improving";
-  }>
+  }[]
 ): FixDecision[] {
   const currentYear = new Date().getFullYear();
 
-  return patterns.map((p) => {
+  return patterns.map(p => {
     const recent = p.last_seen_year >= currentYear - 1;
     const repeated = p.repeat_count >= 3;
     const worsening = p.trend === "worsening";
@@ -172,7 +178,7 @@ function decideFixOrIgnore(
 }
 
 /* =======================
-   COST IMPACT ESTIMATOR (Layer-3)
+   COST IMPACT (Layer-3)
 ======================= */
 
 const COST_RANGES: Record<string, { min: number; max: number }> = {
@@ -190,31 +196,75 @@ function estimateCost(decisions: FixDecision[]) {
   let maxTotal = 0;
 
   const breakdown = decisions
-    .filter((d) => d.decision === "FIX")
-    .map((d) => {
-      const range = COST_RANGES[d.theme] || COST_RANGES.other;
-      minTotal += range.min;
-      maxTotal += range.max;
-      return {
-        theme: d.theme,
-        range: `£${range.min} – £${range.max}`,
-      };
+    .filter(d => d.decision === "FIX")
+    .map(d => {
+      const r = COST_RANGES[d.theme] || COST_RANGES.other;
+      minTotal += r.min;
+      maxTotal += r.max;
+      return { theme: d.theme, range: `£${r.min} – £${r.max}` };
     });
 
-  return {
-    breakdown,
-    totalRange: `£${minTotal} – £${maxTotal}`,
-  };
+  return { minTotal, maxTotal, breakdown };
 }
 
 /* =======================
-   MOT Intelligence v3
+   MOT READINESS (Layer-4)
+======================= */
+
+function calculateMotReadiness(input: {
+  decisions: FixDecision[];
+  patterns: { trend: "worsening" | "stable" | "improving" }[];
+  riskBand: RiskBand;
+  estimatedMaxCost: number;
+}) {
+  let score = 100;
+  const reasons: string[] = [];
+  const improvements: string[] = [];
+
+  const fixCount = input.decisions.filter(d => d.decision === "FIX").length;
+  if (fixCount) {
+    score -= fixCount * 25;
+    reasons.push(`${fixCount} critical system(s) require immediate repair`);
+    improvements.push(`Fix ${fixCount} critical item(s) (+${fixCount * 25})`);
+  }
+
+  const worseningCount = input.patterns.filter(p => p.trend === "worsening").length;
+  if (worseningCount) {
+    score -= worseningCount * 15;
+    reasons.push("Worsening defect patterns detected");
+    improvements.push(`Resolve worsening patterns (+${worseningCount * 15})`);
+  }
+
+  if (input.riskBand === "HIGH") {
+    score -= 15;
+    reasons.push("Overall MOT risk is high");
+    improvements.push("Reduce overall risk (+15)");
+  }
+
+  if (input.estimatedMaxCost > 1000) {
+    score -= 10;
+    reasons.push("High expected repair cost before MOT");
+    improvements.push("Reduce repair cost exposure (+10)");
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  let label: "READY" | "FAIR" | "POOR" | "NOT READY" = "READY";
+  if (score < 40) label = "NOT READY";
+  else if (score < 60) label = "POOR";
+  else if (score < 80) label = "FAIR";
+
+  return { score, label, reasons, improvements };
+}
+
+/* =======================
+   MOT Intelligence v4
 ======================= */
 
 const MOT_HISTORY_API_URL =
   process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
 
-async function tool_get_mot_intelligence_v3(vrm: string) {
+async function tool_get_mot_intelligence_v4(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${vrm}`);
   if (!r.ok) throw new Error("MOT fetch failed");
 
@@ -223,9 +273,10 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
   const latest = tests[0] || {};
 
   const ageYears = yearsSince(data.firstUsedDate || data.registrationDate);
+  const mileage = Number(latest.odometerValue);
 
   const themeCounts: Record<string, number> = {};
-  const themeYearStats: Record<string, ThemeYearStat> = {};
+  const stats: Record<string, ThemeYearStat> = {};
 
   for (const t of tests) {
     const year = t.completedDate ? new Date(t.completedDate).getFullYear() : null;
@@ -234,49 +285,44 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
       const theme = themeFromText(d.text);
       themeCounts[theme] = (themeCounts[theme] || 0) + 1;
 
-      if (!themeYearStats[theme]) {
-        themeYearStats[theme] = {
-          first_seen: year,
-          last_seen: year,
-          count: 1,
-          years: [year],
-        };
+      if (!stats[theme]) {
+        stats[theme] = { first_seen: year, last_seen: year, count: 1, years: [year] };
       } else {
-        const s = themeYearStats[theme];
-        s.count++;
-        s.years.push(year);
-        s.first_seen = Math.min(s.first_seen, year);
-        s.last_seen = Math.max(s.last_seen, year);
+        stats[theme].count++;
+        stats[theme].years.push(year);
+        stats[theme].last_seen = Math.max(stats[theme].last_seen, year);
       }
     }
   }
 
-  const patterns = Object.entries(themeYearStats).map(([theme, s]) => {
+  const patterns = Object.entries(stats).map(([theme, s]) => {
     let trend: "worsening" | "stable" | "improving" = "stable";
-    if (s.years.filter((y) => y >= new Date().getFullYear() - 1).length >= 2)
+    if (s.years.filter(y => y >= new Date().getFullYear() - 1).length >= 2)
       trend = "worsening";
     if (s.last_seen < new Date().getFullYear() - 3)
       trend = "improving";
-    return {
-      theme,
-      repeat_count: s.count,
-      first_seen_year: s.first_seen,
-      last_seen_year: s.last_seen,
-      trend,
-    };
+
+    return { theme, repeat_count: s.count, last_seen_year: s.last_seen, trend };
   });
 
   const decisions = decideFixOrIgnore(patterns);
-  const costEstimate = estimateCost(decisions);
+  const cost = estimateCost(decisions);
 
   const risk = scoreMotRisk({
     ageYears,
-    mileage: Number(latest.odometerValue),
-    latestResult: latest.testResult || "",
+    mileage,
+    latestResult: latest.testResult,
     repeatThemes: themeCounts,
   });
 
-  return { vrm, patterns, decisions, costEstimate, risk };
+  const readiness = calculateMotReadiness({
+    decisions,
+    patterns,
+    riskBand: risk.band,
+    estimatedMaxCost: cost.maxTotal,
+  });
+
+  return { patterns, decisions, cost, risk, readiness };
 }
 
 /* =======================
@@ -291,10 +337,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (intent === "mot_preparation") {
     const vrm = extractVRM(text);
-    if (!vrm) return res.status(200).json({ status: "needs_clarification" });
+    if (!vrm)
+      return res.status(200).json({ status: "needs_clarification" });
 
     const t0 = Date.now();
-    const intel = await tool_get_mot_intelligence_v3(vrm);
+    const intel = await tool_get_mot_intelligence_v4(vrm);
     tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
 
     return res.status(200).json({
@@ -303,23 +350,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       sections: {
         understanding: `MOT intelligence for ${vrm}.`,
         analysis: [
-          "Fix vs Monitor assessment:",
-          ...intel.decisions
-            .filter((d) => d.decision === "FIX")
-            .map(
-              (d) =>
-                `FIX NOW: ${d.theme} — ${d.reason} (confidence: ${d.confidence}).`
-            ),
-          `Estimated MOT preparation cost: ${intel.costEstimate.totalRange}`,
-          ...intel.costEstimate.breakdown.map(
-            (b) => `• ${b.theme}: ${b.range}`
-          ),
+          `MOT Readiness Score: ${intel.readiness.score}/100 (${intel.readiness.label})`,
+          "Why:",
+          ...intel.readiness.reasons.map(r => `• ${r}`),
+          "What improves it:",
+          ...intel.readiness.improvements.map(i => `• ${i}`),
+          `Estimated MOT preparation cost: £${intel.cost.minTotal} – £${intel.cost.maxTotal}`,
           `Risk score: ${intel.risk.score}/100 (${intel.risk.band})`,
         ],
         recommended_next_step:
-          "Fix critical items and budget for expected costs before booking your MOT.",
+          "Fix critical items and improve readiness before booking your MOT.",
       },
-      actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
+      actions: [
+        { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      ],
       meta: { request_id: id, tool_calls },
     });
   }
