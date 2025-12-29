@@ -400,6 +400,17 @@ async function tool_get_mot_intelligence_v2(vrm: string): Promise<{
     else if (t.theme === "emissions")
       actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
     else actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
+    else if (t.theme === "steering")
+  actionPlan.push("Steering: inspect rack, track rods, joints; address play or leaks.");
+else if (t.theme === "exhaust")
+  actionPlan.push("Exhaust: check for leaks or damaged mounts before emissions test.");
+else if (t.theme === "seatbelts_srs")
+  actionPlan.push("Safety systems: check seatbelts and airbag/SRS warning lights.");
+else if (t.theme === "electrical")
+  actionPlan.push("Electrical: resolve warning lights; check battery and alternator.");
+else if (t.theme === "body_structure")
+  actionPlan.push("Body/structure: inspect doors, bonnet latches, and body condition.");
+
   }
 
   return {
