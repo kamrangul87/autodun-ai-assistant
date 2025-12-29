@@ -262,6 +262,49 @@ function themeFromText(t: string): string {
   // Body / doors / bonnet
   if (has("door", "bonnet", "boot", "tailgate", "latch", "hinge", "bumper", "panel"))
     return "body_structure";
+  // Generic DVSA phrasing → infer likely system
+
+  if (
+    has(
+      "excessive play",
+      "insecure",
+      "loose",
+      "movement",
+      "worn",
+      "deteriorated",
+      "fractured",
+      "cracked"
+    )
+  ) {
+    // Most common DVSA wording for suspension / steering wear
+    return "suspension";
+  }
+
+  if (
+    has(
+      "not operating correctly",
+      "operation impaired",
+      "does not operate",
+      "malfunction",
+      "fails to operate"
+    )
+  ) {
+    return "electrical";
+  }
+
+  if (
+    has(
+      "mounting",
+      "bracket",
+      "support",
+      "carrier",
+      "fixing",
+      "secure",
+      "retaining"
+    )
+  ) {
+    return "body_structure";
+  }
 
   return "other";
 }
