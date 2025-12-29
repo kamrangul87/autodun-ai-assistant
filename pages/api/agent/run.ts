@@ -26,41 +26,6 @@ function requestId() {
   return "agt_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/**
- * Robustly read `text` from request body.
- * Supports:
- *  - { text: "..." }
- *  - "..." (raw string)
- *  - body as JSON string that contains { text: "..." }
- */
-function getTextFromBody(req: NextApiRequest): string {
-  const b: any = (req as any).body;
-
-  // Case 1: already an object with text
-  if (b && typeof b === "object" && typeof b.text === "string") return b.text;
-
-  // Case 2: raw string
-  if (typeof b === "string") {
-    const s = b.trim();
-
-    // if it's JSON string, try parse
-    if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith('"') && s.endsWith('"'))) {
-      try {
-        const parsed = JSON.parse(s);
-        if (parsed && typeof parsed === "object" && typeof parsed.text === "string") return parsed.text;
-        if (typeof parsed === "string") return parsed;
-      } catch {
-        // fallthrough to raw string
-      }
-    }
-
-    return s.replace(/^"(.*)"$/, "$1"); // if quoted string came through
-  }
-
-  // Case 3: unknown shape
-  return "";
-}
-
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
 
@@ -116,7 +81,6 @@ function classifyIntent(text: string): AgentIntent {
     "charge",
     "charging",
     "charger",
-    "chargers",
     "ccs",
     "type 2",
     "chademo",
@@ -127,6 +91,7 @@ function classifyIntent(text: string): AgentIntent {
     "charging near me",
     "near me",
     "postcode",
+    "post code",
   ];
 
   const used = [
@@ -182,34 +147,42 @@ function extractVRM(text: string): string | null {
 }
 
 /**
- * UK postcode extractor (v2 - safer)
- * Matches: SW1A 1AA, M1 1AE, B33 8TH, B338TH
+ * UK postcode extractor (more robust)
+ * Handles: SW1A 1AA, SW1A1AA, non-breaking spaces, punctuation
  */
 function extractPostcode(text: string): string | null {
-  const clean = text.toUpperCase().replace(/\s+/g, " ").trim();
+  const cleaned = text
+    .toUpperCase()
+    .replace(/\u00A0/g, " ") // NBSP -> space
+    .replace(/[^\w\s]/g, " ") // punctuation -> space
+    .replace(/\s+/g, " ")
+    .trim();
 
-  // common UK postcode regex (simplified but strong enough for routing)
-  const m = clean.match(/\b([A-Z]{1,2}\d{1,2}[A-Z]?)\s*(\d[A-Z]{2})\b/);
+  const m = cleaned.match(/\b([A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2})\b/);
   if (!m) return null;
-  return `${m[1]} ${m[2]}`.trim();
+
+  // normalize to "SW1A 1AA"
+  const raw = m[1].replace(/\s+/g, "");
+  if (raw.length < 5) return null;
+  return raw.slice(0, raw.length - 3) + " " + raw.slice(raw.length - 3);
 }
 
 // -----------------------
-// MOT Intelligence v2 (your code kept, only small fixes)
+// MOT Intelligence v2
 // -----------------------
 
 type MotDefect = {
   dangerous?: boolean;
   text?: string;
-  type?: string; // ADVISORY | FAIL | MAJOR | DANGEROUS (varies)
+  type?: string;
 };
 
 type MotTest = {
   completedDate?: string;
   expiryDate?: string;
-  testResult?: string; // PASSED / FAILED
-  odometerValue?: string; // sometimes string
-  odometerUnit?: string; // MI
+  testResult?: string;
+  odometerValue?: string;
+  odometerUnit?: string;
   defects?: MotDefect[];
 };
 
@@ -244,42 +217,30 @@ function yearsSince(dateStr?: string): number | null {
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
   const x = s.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
-
   const has = (...keys: string[]) => keys.some((k) => x.includes(k));
 
   if (has("corrosion", "corroded", "rust", "rotted", "subframe", "chassis", "structural", "mounting"))
     return "corrosion";
-
   if (has("brake", "disc", "pad", "caliper", "handbrake", "parking brake", "brake pipe", "brake hose", "abs"))
     return "brakes";
-
   if (has("tyre", "tire", "tread", "sidewall", "bulge", "cord", "wheel", "rim", "alloy"))
     return "tyres";
-
   if (has("suspension", "shock", "strut", "spring", "damper", "wishbone", "control arm", "bush", "ball joint", "drop link"))
     return "suspension";
-
   if (has("steering", "rack", "track rod", "tie rod", "power steering", "column", "joint"))
     return "steering";
-
   if (has("exhaust", "silencer", "muffler", "tailpipe", "flexi", "flexible joint"))
     return "exhaust";
-
   if (has("emission", "smoke", "lambda", "o2 sensor", "catalyst", "dpf", "egr", "engine management", "check engine"))
     return "emissions";
-
   if (has("oil leak", "leak", "coolant", "brake fluid", "power steering fluid"))
     return "leaks_fluids";
-
   if (has("light", "lamp", "headlamp", "indicator", "fog", "wiper", "washer", "windscreen", "mirror"))
     return "lights_visibility";
-
   if (has("seat belt", "seatbelt", "pretensioner", "airbag", "srs"))
     return "seatbelts_srs";
-
   if (has("battery", "alternator", "starter", "wiring", "electrical", "warning lamp", "dashboard warning"))
     return "electrical";
-
   if (has("door", "bonnet", "boot", "tailgate", "latch", "hinge", "bumper", "panel"))
     return "body_structure";
 
@@ -333,8 +294,8 @@ function scoreMotRisk(input: {
   score += Math.min(10, repeats * 3);
 
   score = Math.max(0, Math.min(100, score));
-  const band: RiskBand = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
 
+  const band: RiskBand = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
   return { score, band };
 }
 
@@ -411,17 +372,29 @@ async function tool_get_mot_intelligence_v2(vrm: string): Promise<{
 
   const actionPlan: string[] = [];
   for (const t of topThemes) {
-    if (t.theme === "suspension") actionPlan.push("Suspension/steering: inspect bushes, arms, shocks; fix play/noise.");
-    else if (t.theme === "brakes") actionPlan.push("Brakes: check pads/discs/pipes; address corrosion/leaks early.");
-    else if (t.theme === "tyres") actionPlan.push("Tyres: tread/sidewall; check alignment and pressures.");
-    else if (t.theme === "corrosion") actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
-    else if (t.theme === "emissions") actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
-    else if (t.theme === "steering") actionPlan.push("Steering: inspect rack, track rods, joints; address play or leaks.");
-    else if (t.theme === "exhaust") actionPlan.push("Exhaust: check for leaks or damaged mounts before emissions test.");
-    else if (t.theme === "seatbelts_srs") actionPlan.push("Safety systems: check seatbelts and airbag/SRS warning lights.");
-    else if (t.theme === "electrical") actionPlan.push("Electrical: resolve warning lights; check battery and alternator.");
-    else if (t.theme === "body_structure") actionPlan.push("Body/structure: inspect doors, bonnet latches, and body condition.");
-    else actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
+    if (t.theme === "suspension") {
+      actionPlan.push("Suspension/steering: inspect bushes, arms, shocks; fix play/noise.");
+    } else if (t.theme === "brakes") {
+      actionPlan.push("Brakes: check pads/discs/pipes; address corrosion/leaks early.");
+    } else if (t.theme === "tyres") {
+      actionPlan.push("Tyres: tread/sidewall; check alignment and pressures.");
+    } else if (t.theme === "corrosion") {
+      actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
+    } else if (t.theme === "emissions") {
+      actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
+    } else if (t.theme === "steering") {
+      actionPlan.push("Steering: inspect rack, track rods, joints; address play or leaks.");
+    } else if (t.theme === "exhaust") {
+      actionPlan.push("Exhaust: check for leaks or damaged mounts before emissions test.");
+    } else if (t.theme === "seatbelts_srs") {
+      actionPlan.push("Safety systems: check seatbelts and airbag/SRS warning lights.");
+    } else if (t.theme === "electrical") {
+      actionPlan.push("Electrical: resolve warning lights; check battery and alternator.");
+    } else if (t.theme === "body_structure") {
+      actionPlan.push("Body/structure: inspect doors, bonnet latches, and body condition.");
+    } else {
+      actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
+    }
   }
 
   return {
@@ -477,6 +450,52 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   return { risk_band: risk, drivers, checklist };
 }
 
+function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
+  return {
+    status: "out_of_scope",
+    intent: "unknown_out_of_scope",
+    sections: {
+      understanding: "This request is outside the current Autodun AI Assistant scope.",
+      analysis: [
+        "Autodun AI Assistant is a bounded routing agent.",
+        "Supported workflows in v1: MOT preparation, EV charging readiness, used-car buying checks.",
+      ],
+      recommended_next_step:
+        "If your question relates to MOT risk, EV charging, or a used-car checklist, rephrase it and I’ll route you correctly.",
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: { request_id: id, tool_calls },
+  };
+}
+
+function needsClarificationResponse(
+  id: string,
+  intent: AgentIntent,
+  tool_calls: AgentResponse["meta"]["tool_calls"],
+  message: string,
+  next: string
+): AgentResponse {
+  return {
+    status: "needs_clarification",
+    intent,
+    sections: {
+      understanding: message,
+      analysis: ["Provide the missing detail so I can run the right tool call."],
+      recommended_next_step: next,
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: { request_id: id, tool_calls },
+  };
+}
+
 async function tool_get_used_car_buyer_checklist() {
   return {
     must_check: [
@@ -494,57 +513,43 @@ async function tool_get_used_car_buyer_checklist() {
   };
 }
 
-function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
-  return {
-    status: "out_of_scope",
-    intent: "unknown_out_of_scope",
-    sections: {
-      understanding: "This request is outside the current Autodun AI Assistant scope.",
-      analysis: [
-        "Supported workflows: MOT preparation, EV charging readiness, used-car buying checks.",
-        "Rephrase your request to one of these goals and I will route you correctly.",
-      ],
-      recommended_next_step:
-        "Try: “MOT intelligence for ML58FOU” OR “chargers near SW1A 1AA” OR “I’m buying a used car — checklist”.",
-    },
-    actions: [
-      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
-      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-    ],
-    meta: { request_id: id, tool_calls },
-  };
-}
+// -----------------------
+// Handler
+// -----------------------
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const id = requestId();
-  const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
-
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const text = getTextFromBody(req).trim();
+  // ✅ Accept body as either:
+  // - { text: "..." }
+  // - "..." (string)
+  const rawBody: any = req.body;
+  const text =
+    (typeof rawBody === "string" ? rawBody : typeof rawBody?.text === "string" ? rawBody.text : "")
+      .toString()
+      .trim();
+
   if (text.length < 3 || text.length > 800) {
     const out: AgentResponse = {
       status: "needs_clarification",
       intent: "unknown_out_of_scope",
       sections: {
-        understanding: "I didn’t receive a valid request.",
-        analysis: [
-          "Send JSON like: { \"text\": \"chargers near SW1A 1AA\" }",
-          "Or: { \"text\": \"MOT intelligence for ML58FOU\" }",
-        ],
-        recommended_next_step: "Please resend your request in the JSON format above.",
+        understanding: "Your message is missing or too short.",
+        analysis: ["Send a short goal like: “chargers near SW1A 1AA” or “MOT for ML58FOU”."],
+        recommended_next_step: "Try: chargers near SW1A 1AA",
       },
       actions: [
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "primary" },
-        { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
+        { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls },
+      meta: { request_id: id, tool_calls: [] },
     };
     return res.status(200).json(out);
   }
 
   const intent = classifyIntent(text);
+  const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
   try {
     if (intent === "unknown_out_of_scope") return res.status(200).json(oosResponse(id, tool_calls));
@@ -560,13 +565,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const intel = await tool_get_mot_intelligence_v2(vrm);
         tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
 
-        const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(intel.latest.completedDate || "n/a")}).`;
+        const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(
+          intel.latest.completedDate || "n/a"
+        )}).`;
         const expiryLine = intel.latest.expiryDate ? `Expiry: ${intel.latest.expiryDate}.` : "";
-        const mileageLine = typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
+        const mileageLine =
+          typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
+
         const countsLine = `Counts (all tests): Advisories ${intel.counts.advisories}, Fails ${intel.counts.fails}, Major ${intel.counts.major}, Dangerous ${intel.counts.dangerous}.`;
-        const themeLine = intel.topThemes.length > 0
-          ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
-          : "Repeat themes: none detected.";
+
+        const themeLine =
+          intel.topThemes.length > 0
+            ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
+            : "Repeat themes: none detected.";
+
         const riskLine = `Risk score: ${intel.risk.score}/100 (${intel.risk.band}).`;
 
         const out: AgentResponse = {
@@ -582,9 +594,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               themeLine,
               riskLine,
               "Priority action plan:",
-              ...intel.actionPlan.slice(0, 5).map((x) => `• ${x}`),
+              ...intel.actionPlan.slice(0, 3).map((x) => `• ${x}`),
             ],
-            recommended_next_step: "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
+            recommended_next_step:
+              "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
           },
           actions: [
             { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
@@ -592,25 +605,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           ],
           meta: { request_id: id, tool_calls },
         };
+
         return res.status(200).json(out);
       }
 
       if (age === null && miles === null) {
-        const out: AgentResponse = {
-          status: "needs_clarification",
-          intent,
-          sections: {
-            understanding: "You want MOT guidance, but key details are missing.",
-            analysis: ["Tell me VRM OR vehicle age + mileage to estimate risk and give a checklist."],
-            recommended_next_step: "Reply with your VRM (example: ML58FOU) or say “10 years old, 85k miles”.",
-          },
-          actions: [
-            { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-          ],
-          meta: { request_id: id, tool_calls },
-        };
-        return res.status(200).json(out);
+        return res
+          .status(200)
+          .json(
+            needsClarificationResponse(
+              id,
+              intent,
+              tool_calls,
+              "You want MOT guidance, but key details are missing.",
+              "Reply with your VRM (example: ML58FOU) or say “10 years old, 85k miles”."
+            )
+          );
       }
 
       const t0 = Date.now();
@@ -621,9 +631,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         status: "ok",
         intent,
         sections: {
-          understanding: "MOT risk view and what to check before the test.",
-          analysis: [`Risk band: ${mot.risk_band}.`, ...mot.drivers, ...mot.checklist],
-          recommended_next_step: "Add your VRM to get the live MOT history pattern analysis.",
+          understanding: "You want an MOT risk view and what to check before the test.",
+          analysis: [`Risk band: ${mot.risk_band}.`, ...mot.drivers, ...mot.checklist.slice(0, 5)],
+          recommended_next_step: "Open MOT Predictor to run a personalised check (VRM-based) and next actions.",
         },
         actions: [
           { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
@@ -639,24 +649,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const postcode = extractPostcode(text);
 
       if (!postcode) {
-        const out: AgentResponse = {
-          status: "needs_clarification",
-          intent,
-          sections: {
-            understanding: "You want EV charging options near you.",
-            analysis: [
-              "To show nearby chargers, I need a UK postcode (example: SW1A 1AA).",
-              "Optional: add connector preference (CCS/Type 2) and rapid-only.",
-            ],
-            recommended_next_step: "Reply with: “chargers near SW1A 1AA”.",
-          },
-          actions: [
-            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
-            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-          ],
-          meta: { request_id: id, tool_calls },
-        };
-        return res.status(200).json(out);
+        return res
+          .status(200)
+          .json(
+            needsClarificationResponse(
+              id,
+              intent,
+              tool_calls,
+              "You want EV charging options near you.",
+              "Reply with your UK postcode (example: SW1A 1AA)."
+            )
+          );
       }
 
       const tStations = Date.now();
@@ -678,7 +681,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               }),
               "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
             ]
-          : [`No stations were returned for ${postcode}.`, "Open EV Charger Finder to search on the map."];
+          : [`No stations were returned for that postcode.`, "Open EV Charger Finder to search on the map."];
 
       const out: AgentResponse = {
         status: "ok",
@@ -706,8 +709,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       status: "ok",
       intent: "used_car_buyer",
       sections: {
-        understanding: "Used-car checklist to reduce buying risk.",
-        analysis: [...used.must_check, "Red flags:", ...used.red_flags.map((x) => `• ${x}`)],
+        understanding: "You want a used-car checklist to reduce buying risk.",
+        analysis: [...used.must_check.slice(0, 5), "Red flags:", ...used.red_flags.slice(0, 3)],
         recommended_next_step: "Use MOT Predictor to review MOT history before committing.",
       },
       actions: [
@@ -730,12 +733,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         recommended_next_step: "Please try again.",
       },
       actions: [
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "primary" },
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls },
     };
-    return res.status(500).json(out);
+    return res.status(200).json(out); // ✅ always return full shape to avoid UI crash
   }
 }
