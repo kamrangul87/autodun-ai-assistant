@@ -36,11 +36,11 @@ function requestId() {
 
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
-  if (["visa","job","health","bitcoin"].some(k => t.includes(k)))
+  if (["visa", "job", "health", "bitcoin"].some(k => t.includes(k)))
     return "unknown_out_of_scope";
-  if (["ev","charging","postcode"].some(k => t.includes(k)))
+  if (["ev", "charging", "postcode"].some(k => t.includes(k)))
     return "ev_charging_readiness";
-  if (["buy","used","v5","hpi"].some(k => t.includes(k)))
+  if (["buy", "used", "v5", "hpi"].some(k => t.includes(k)))
     return "used_car_buyer";
   return "mot_preparation";
 }
@@ -106,12 +106,12 @@ function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
   const has = (...k: string[]) => k.some(x => s.includes(x));
 
-  if (has("tyre","tread","sidewall")) return "tyres";
-  if (has("suspension","bush","shock","arm","ball joint")) return "suspension";
-  if (has("brake","disc","pad","caliper")) return "brakes";
-  if (has("exhaust","silencer","flexi")) return "exhaust";
-  if (has("corrosion","rust","subframe","chassis")) return "corrosion";
-  if (has("emission","lambda","dpf","egr")) return "emissions";
+  if (has("tyre", "tread", "sidewall")) return "tyres";
+  if (has("suspension", "bush", "shock", "arm", "ball joint")) return "suspension";
+  if (has("brake", "disc", "pad", "caliper")) return "brakes";
+  if (has("exhaust", "silencer", "flexi")) return "exhaust";
+  if (has("corrosion", "rust", "subframe", "chassis")) return "corrosion";
+  if (has("emission", "lambda", "dpf", "egr")) return "emissions";
   return "other";
 }
 
@@ -258,13 +258,35 @@ function calculateMotReadiness(input: {
 }
 
 /* =======================
-   MOT Intelligence v4
+   REPAIR PRIORITY TIMELINE (Layer-5)
+======================= */
+
+function buildRepairTimeline(decisions: FixDecision[]) {
+  return decisions.map(d => {
+    if (d.decision === "FIX") {
+      return {
+        theme: d.theme,
+        priority: "NOW",
+        reason: "High probability of MOT failure if not repaired",
+      };
+    }
+
+    return {
+      theme: d.theme,
+      priority: "BEFORE NEXT MOT",
+      reason: "Monitor and repair if condition worsens",
+    };
+  });
+}
+
+/* =======================
+   MOT Intelligence v5
 ======================= */
 
 const MOT_HISTORY_API_URL =
   process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
 
-async function tool_get_mot_intelligence_v4(vrm: string) {
+async function tool_get_mot_intelligence_v5(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${vrm}`);
   if (!r.ok) throw new Error("MOT fetch failed");
 
@@ -322,7 +344,9 @@ async function tool_get_mot_intelligence_v4(vrm: string) {
     estimatedMaxCost: cost.maxTotal,
   });
 
-  return { patterns, decisions, cost, risk, readiness };
+  const timeline = buildRepairTimeline(decisions);
+
+  return { patterns, decisions, cost, risk, readiness, timeline };
 }
 
 /* =======================
@@ -341,7 +365,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json({ status: "needs_clarification" });
 
     const t0 = Date.now();
-    const intel = await tool_get_mot_intelligence_v4(vrm);
+    const intel = await tool_get_mot_intelligence_v5(vrm);
     tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
 
     return res.status(200).json({
@@ -351,15 +375,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         understanding: `MOT intelligence for ${vrm}.`,
         analysis: [
           `MOT Readiness Score: ${intel.readiness.score}/100 (${intel.readiness.label})`,
-          "Why:",
-          ...intel.readiness.reasons.map(r => `• ${r}`),
-          "What improves it:",
-          ...intel.readiness.improvements.map(i => `• ${i}`),
+          "Repair timeline:",
+          ...intel.timeline.map(t => `• ${t.priority}: ${t.theme} — ${t.reason}`),
           `Estimated MOT preparation cost: £${intel.cost.minTotal} – £${intel.cost.maxTotal}`,
           `Risk score: ${intel.risk.score}/100 (${intel.risk.band})`,
         ],
         recommended_next_step:
-          "Fix critical items and improve readiness before booking your MOT.",
+          "Address NOW items immediately and plan remaining repairs before the next MOT.",
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
