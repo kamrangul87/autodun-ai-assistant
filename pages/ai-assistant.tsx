@@ -109,33 +109,48 @@ export default function AIAssistantPage() {
 
   useEffect(() => {
     return () => {
-      // cleanup on unmount
       abortRef.current?.abort();
     };
   }, []);
+
+  // ✅ Minimal addition: detect EV-like queries and route to EV endpoint
+  function isEvQuery(input: string): boolean {
+    const t = (input || "").toLowerCase();
+
+    // UK postcode regex (simple + robust enough)
+    const hasPostcode = /\b[a-z]{1,2}\d{1,2}[a-z]?\s*\d[a-z]{2}\b/i.test(input);
+
+    const evKeywords = ["ev", "electric", "charge", "charging", "charger", "type 2", "ccs", "chademo", "ultra rapid", "rapid"];
+    const looksEv = hasPostcode || evKeywords.some((k) => t.includes(k));
+
+    // Avoid mis-routing MOT queries that contain "mot" + "registration" etc.
+    const motKeywords = ["mot", "advisory", "advisories", "fail", "fails", "vrm", "registration"];
+    const looksMot = motKeywords.some((k) => t.includes(k));
+
+    return looksEv && !looksMot;
+  }
 
   async function runAgent(overrideText?: string) {
     const finalText = (overrideText ?? text).trim();
     if (finalText.length < 3) return;
 
-    // cancel any in-flight request
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // sequence id to ignore late responses
     const seq = ++reqSeqRef.current;
 
     setErr(null);
     setLoading(true);
     setLastPrompt(finalText);
     setLastAt(new Date().toLocaleString());
-
-    // IMPORTANT: clear latestRes so UI never shows old results while loading
     setLatestRes(null);
 
+    // ✅ Minimal change: dynamic endpoint
+    const endpoint = isEvQuery(finalText) ? "/api/agent/ev" : "/api/agent/run";
+
     try {
-      const r = await fetch("/api/agent/run", {
+      const r = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -147,10 +162,8 @@ export default function AIAssistantPage() {
 
       const data = (await r.json()) as AgentResponse;
 
-      // ignore if a newer request already started
       if (seq !== reqSeqRef.current) return;
 
-      // If API returned non-2xx, still show the payload as "latestRes"
       if (!r.ok) {
         setLatestRes({
           status: "error",
@@ -176,7 +189,6 @@ export default function AIAssistantPage() {
         );
       }
 
-      // ✅ Always show the latest response, including needs_clarification
       const normalized: AgentResponse = {
         status: data?.status ?? "ok",
         intent: data?.intent ?? "unknown_out_of_scope",
@@ -191,15 +203,11 @@ export default function AIAssistantPage() {
 
       setLatestRes(normalized);
 
-      // keep last success separately
       if (normalized.status === "ok") {
         setLastOkRes(normalized);
       }
     } catch (e: any) {
-      if (e?.name === "AbortError") {
-        // user triggered new request; do not show error
-        return;
-      }
+      if (e?.name === "AbortError") return;
       setErr(e?.message || "Something went wrong. Please try again.");
     } finally {
       if (seq === reqSeqRef.current) setLoading(false);
@@ -222,14 +230,14 @@ export default function AIAssistantPage() {
       latest_response: latestRes,
       last_successful_ok_response: lastOkRes,
     };
-    navigator.clipboard
-      .writeText(JSON.stringify(payload, null, 2))
-      .catch(() => {});
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).catch(() => {});
   }
 
   const showGuided =
     !!latestRes &&
-    (latestRes.status === "out_of_scope" || latestRes.intent === "unknown_out_of_scope" || latestRes.status === "needs_clarification");
+    (latestRes.status === "out_of_scope" ||
+      latestRes.intent === "unknown_out_of_scope" ||
+      latestRes.status === "needs_clarification");
 
   const traceText =
     latestRes?.meta?.tool_calls?.length
@@ -331,7 +339,6 @@ export default function AIAssistantPage() {
             </div>
           </section>
 
-          {/* ✅ Latest response always shown (no stale “old result”) */}
           {latestRes ? (
             <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
@@ -409,7 +416,6 @@ export default function AIAssistantPage() {
             </section>
           ) : null}
 
-          {/* Optional: show last OK separately, but never as the “current” result */}
           {lastOkRes && (!latestRes || latestRes.status !== "ok") ? (
             <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/20 p-5">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -418,10 +424,7 @@ export default function AIAssistantPage() {
                   Shown for reference only (latest result is above).
                 </span>
               </div>
-              <Section
-                title="Understanding"
-                body={safeText(lastOkRes.sections?.understanding)}
-              />
+              <Section title="Understanding" body={safeText(lastOkRes.sections?.understanding)} />
               <SectionList title="Analysis" items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)} />
             </section>
           ) : null}
