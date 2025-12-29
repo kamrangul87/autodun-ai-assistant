@@ -417,8 +417,8 @@ async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mi
   const miles = input.mileage ?? null;
 
   // kept as-is (does not affect your build error)
-  let risk: "LOW" | "MEDIUM" | "HIGHER" = "MEDIUM";
-  if ((age !== null && age >= 12) || (miles !== null && miles >= 120000)) risk = "HIGHER";
+ let risk: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM";
+  if ((age !== null && age >= 12) || (miles !== null && miles >= 120000)) risk = "HIGH";
   if (age !== null && miles !== null && age <= 4 && miles <= 40000) risk = "LOW";
 
   const drivers: string[] = [];
