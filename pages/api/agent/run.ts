@@ -258,35 +258,89 @@ function calculateMotReadiness(input: {
 }
 
 /* =======================
-   REPAIR PRIORITY TIMELINE (Layer-5)
+   REPAIR PRIORITY (Layer-5)
 ======================= */
 
 function buildRepairTimeline(decisions: FixDecision[]) {
-  return decisions.map(d => {
-    if (d.decision === "FIX") {
-      return {
-        theme: d.theme,
-        priority: "NOW",
-        reason: "High probability of MOT failure if not repaired",
-      };
-    }
-
-    return {
-      theme: d.theme,
-      priority: "BEFORE NEXT MOT",
-      reason: "Monitor and repair if condition worsens",
-    };
-  });
+  return decisions.map(d =>
+    d.decision === "FIX"
+      ? { theme: d.theme, priority: "NOW", reason: "High MOT failure probability" }
+      : { theme: d.theme, priority: "BEFORE NEXT MOT", reason: "Monitor condition" }
+  );
 }
 
 /* =======================
-   MOT Intelligence v5
+   OWNERSHIP DECISION (Layer-6)
+======================= */
+
+function decideKeepOrReplace(input: {
+  ageYears: number | null;
+  mileage: number | null;
+  estimatedMaxCost: number;
+  readinessScore: number;
+  riskBand: RiskBand;
+  fixNowCount: number;
+}) {
+  let signals = 0;
+  const reasons: string[] = [];
+
+  if (input.ageYears !== null && input.ageYears >= 10) {
+    signals++;
+    reasons.push("Vehicle age exceeds 10 years");
+  }
+
+  if (input.mileage !== null && input.mileage >= 120000) {
+    signals++;
+    reasons.push("High mileage increases long-term maintenance risk");
+  }
+
+  if (input.estimatedMaxCost >= 1500) {
+    signals += 2;
+    reasons.push("Expected MOT-related repairs are expensive");
+  }
+
+  if (input.readinessScore <= 50) {
+    signals++;
+    reasons.push("Vehicle is poorly prepared for immediate MOT");
+  }
+
+  if (input.fixNowCount >= 2) {
+    signals++;
+    reasons.push("Multiple critical repairs required immediately");
+  }
+
+  if (input.riskBand === "HIGH") {
+    signals++;
+    reasons.push("High probability of recurring MOT failures");
+  }
+
+  let decision: "KEEP" | "CONSIDER_REPLACING" | "REPLACE" = "KEEP";
+  if (signals >= 5) decision = "REPLACE";
+  else if (signals >= 3) decision = "CONSIDER_REPLACING";
+
+  return {
+    decision,
+    score: signals,
+    reasons,
+    keepScenario: [
+      "Expect continued MOT preparation costs",
+      "Repairs may stabilise short-term reliability",
+    ],
+    replaceScenario: [
+      "Avoid escalating repair expenses",
+      "Improve reliability and ownership predictability",
+    ],
+  };
+}
+
+/* =======================
+   MOT Intelligence v6
 ======================= */
 
 const MOT_HISTORY_API_URL =
   process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
 
-async function tool_get_mot_intelligence_v5(vrm: string) {
+async function tool_get_mot_intelligence_v6(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${vrm}`);
   if (!r.ok) throw new Error("MOT fetch failed");
 
@@ -346,7 +400,16 @@ async function tool_get_mot_intelligence_v5(vrm: string) {
 
   const timeline = buildRepairTimeline(decisions);
 
-  return { patterns, decisions, cost, risk, readiness, timeline };
+  const ownership = decideKeepOrReplace({
+    ageYears,
+    mileage,
+    estimatedMaxCost: cost.maxTotal,
+    readinessScore: readiness.score,
+    riskBand: risk.band,
+    fixNowCount: decisions.filter(d => d.decision === "FIX").length,
+  });
+
+  return { risk, readiness, timeline, cost, ownership };
 }
 
 /* =======================
@@ -361,27 +424,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (intent === "mot_preparation") {
     const vrm = extractVRM(text);
-    if (!vrm)
-      return res.status(200).json({ status: "needs_clarification" });
+    if (!vrm) return res.status(200).json({ status: "needs_clarification" });
 
     const t0 = Date.now();
-    const intel = await tool_get_mot_intelligence_v5(vrm);
+    const intel = await tool_get_mot_intelligence_v6(vrm);
     tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
 
     return res.status(200).json({
       status: "ok",
       intent,
       sections: {
-        understanding: `MOT intelligence for ${vrm}.`,
+        understanding: `Ownership decision for ${vrm}.`,
         analysis: [
-          `MOT Readiness Score: ${intel.readiness.score}/100 (${intel.readiness.label})`,
-          "Repair timeline:",
-          ...intel.timeline.map(t => `• ${t.priority}: ${t.theme} — ${t.reason}`),
-          `Estimated MOT preparation cost: £${intel.cost.minTotal} – £${intel.cost.maxTotal}`,
-          `Risk score: ${intel.risk.score}/100 (${intel.risk.band})`,
+          `Decision: ${intel.ownership.decision}`,
+          ...intel.ownership.reasons.map(r => `• ${r}`),
+          `Estimated MOT repair cost: £${intel.cost.minTotal} – £${intel.cost.maxTotal}`,
+          `MOT Readiness: ${intel.readiness.score}/100 (${intel.readiness.label})`,
         ],
         recommended_next_step:
-          "Address NOW items immediately and plan remaining repairs before the next MOT.",
+          intel.ownership.decision === "KEEP"
+            ? "Proceed with recommended repairs and continue ownership."
+            : "Strongly consider replacing this vehicle to avoid escalating costs.",
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
