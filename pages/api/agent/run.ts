@@ -1,5 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { getNearbyChargers } from "@/lib/tools/evFinder";
+
+/* =======================
+   CANONICAL: MOT Intelligence v3 (Layered)
+   Layers 1–7 implemented here.
+   Do not use older v2 agent-run variants.
+======================= */
+
+/* =======================
+   Agent Types
+======================= */
 
 type AgentStatus = "ok" | "needs_clarification" | "out_of_scope" | "error";
 type AgentIntent =
@@ -19,726 +28,688 @@ type AgentResponse = {
     recommended_next_step: string;
   };
   actions: AgentAction[];
-  meta: { request_id: string; tool_calls: Array<{ name: string; ok: boolean; ms: number }> };
+  meta: {
+    request_id: string;
+    tool_calls: Array<{ name: string; ok: boolean; ms: number }>;
+    version?: string;
+    layers?: string[];
+  };
 };
 
 function requestId() {
   return "agt_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+/* =======================
+   Intent Classification
+======================= */
+
 function classifyIntent(text: string): AgentIntent {
-  const t = text.toLowerCase();
+  const t = (text || "").toLowerCase();
 
-  const hardOOS = [
-    "import",
-    "japan",
-    "customs",
-    "duty",
-    "vat",
-    "dvla registration",
-    "type approval",
-    "shipping",
-    "container",
-    "auction",
-    "copart",
-    "insurance quote",
-    "finance",
-    "loan",
-    "lease",
-    "visa",
-    "immigration",
-    "job",
-    "health",
-    "bitcoin",
-  ];
-  if (hardOOS.some((k) => t.includes(k))) return "unknown_out_of_scope";
+  // Explicit OOS
+  if (["visa", "job", "health", "bitcoin", "immigration", "loan", "finance"].some((k) => t.includes(k))) {
+    return "unknown_out_of_scope";
+  }
 
-  const mot = [
-    "mot",
-    "fail",
-    "test",
-    "advisory",
-    "advisories",
-    "mileage",
-    "miles",
-    "years old",
-    "emission",
-    "emissions",
-    "brake",
-    "brakes",
-    "tyre",
-    "tyres",
-    "suspension",
-    "warning light",
-    "engine light",
-    "vrm",
-    "registration",
-  ];
+  // EV intent
+  if (["ev", "electric", "charging", "charger", "postcode"].some((k) => t.includes(k))) {
+    return "ev_charging_readiness";
+  }
 
-  const ev = [
-    "ev",
-    "electric",
-    "charge",
-    "charging",
-    "charger",
-    "ccs",
-    "type 2",
-    "chademo",
-    "rapid",
-    "ultra rapid",
-    "kwh",
-    "range",
-    "charging near me",
-    "near me",
-    "postcode",
-    "post code",
-  ];
+  // Used-car intent
+  if (["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) => t.includes(k))) {
+    return "used_car_buyer";
+  }
 
-  const used = [
-    "buy",
-    "buying",
-    "used car",
-    "second hand",
-    "purchase",
-    "seller",
-    "inspection",
-    "checklist",
-    "service history",
-    "v5",
-    "hpi",
-    "cat s",
-    "cat n",
-    "write off",
-  ];
-
-  const motScore = mot.filter((k) => t.includes(k)).length;
-  const evScore = ev.filter((k) => t.includes(k)).length;
-  const usedScore = used.filter((k) => t.includes(k)).length;
-
-  if (motScore === 0 && evScore === 0 && usedScore === 0) return "unknown_out_of_scope";
-  if (motScore >= evScore && motScore >= usedScore) return "mot_preparation";
-  if (evScore >= motScore && evScore >= usedScore) return "ev_charging_readiness";
-  return "used_car_buyer";
+  // Default to MOT
+  return "mot_preparation";
 }
 
-function extractAgeYears(text: string): number | null {
-  const m = text.toLowerCase().match(/(\d{1,2})\s*(years|year|yrs|yr)\s*old/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
+/* =======================
+   Extractors
+======================= */
 
-function extractMileage(text: string): number | null {
-  const t = text.toLowerCase().replace(/,/g, "");
-  const k = t.match(/(\d{2,3})\s*k\s*miles/);
-  if (k) return parseInt(k[1], 10) * 1000;
-
-  const m = t.match(/(\d{4,6})\s*miles/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-// VRM extractor (UK format, simple)
 function extractVRM(text: string): string | null {
-  const m = text.toUpperCase().match(/\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/);
-  if (!m) return null;
-  return m[1].replace(/\s+/g, "");
+  const m = (text || "").toUpperCase().match(/\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/);
+  return m ? m[1].replace(/\s+/g, "") : null;
 }
 
-/**
- * UK postcode extractor (more robust)
- * Handles: SW1A 1AA, SW1A1AA, non-breaking spaces, punctuation
- */
-function extractPostcode(text: string): string | null {
-  const cleaned = text
-    .toUpperCase()
-    .replace(/\u00A0/g, " ") // NBSP -> space
-    .replace(/[^\w\s]/g, " ") // punctuation -> space
-    .replace(/\s+/g, " ")
-    .trim();
+/* =======================
+   MOT Types
+======================= */
 
-  const m = cleaned.match(/\b([A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2})\b/);
-  if (!m) return null;
-
-  // normalize to "SW1A 1AA"
-  const raw = m[1].replace(/\s+/g, "");
-  if (raw.length < 5) return null;
-  return raw.slice(0, raw.length - 3) + " " + raw.slice(raw.length - 3);
-}
-
-// -----------------------
-// MOT Intelligence v2
-// -----------------------
-
-type MotDefect = {
-  dangerous?: boolean;
-  text?: string;
-  type?: string;
-};
-
+type MotDefect = { text?: string; type?: string };
 type MotTest = {
   completedDate?: string;
-  expiryDate?: string;
   testResult?: string;
   odometerValue?: string;
   odometerUnit?: string;
   defects?: MotDefect[];
 };
-
 type MotHistory = {
-  registration?: string;
+  firstUsedDate?: string;
+  registrationDate?: string;
   make?: string;
   model?: string;
   fuelType?: string;
   primaryColour?: string;
-  firstUsedDate?: string;
-  registrationDate?: string;
   motTests?: MotTest[];
 };
 
-const MOT_HISTORY_API_URL =
-  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+type ThemeYearStat = {
+  first_seen: number;
+  last_seen: number;
+  count: number;
+  years: number[];
+};
 
-function toNum(v: any): number | null {
-  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+type FixDecision = {
+  theme: string;
+  decision: "FIX" | "MONITOR";
+  confidence: "HIGH" | "MEDIUM";
+  reason: string;
+};
+
+type RiskBand = "LOW" | "MEDIUM" | "HIGH";
+
+/* =======================
+   Utilities
+======================= */
+
+function yearsSince(d?: string): number | null {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  return Math.max(0, (Date.now() - dt.getTime()) / (365.25 * 24 * 3600 * 1000));
+}
+
+function parseMileage(v?: string): number | null {
+  if (!v) return null;
+  const n = Number(String(v).replace(/,/g, "").trim());
   return Number.isFinite(n) ? n : null;
 }
 
-function yearsSince(dateStr?: string): number | null {
-  if (!dateStr) return null;
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return null;
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  return Math.max(0, diff / (365.25 * 24 * 3600 * 1000));
+function sortTestsNewestFirst(tests: MotTest[]) {
+  return [...tests].sort((a, b) => {
+    const da = new Date(a?.completedDate || 0).getTime();
+    const db = new Date(b?.completedDate || 0).getTime();
+    return db - da;
+  });
 }
+
+/* =======================
+   Theme Classifier
+======================= */
 
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
-  const x = s.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
-  const has = (...keys: string[]) => keys.some((k) => x.includes(k));
+  const has = (...k: string[]) => k.some((x) => s.includes(x));
 
-  if (has("corrosion", "corroded", "rust", "rotted", "subframe", "chassis", "structural", "mounting"))
-    return "corrosion";
-  if (has("brake", "disc", "pad", "caliper", "handbrake", "parking brake", "brake pipe", "brake hose", "abs"))
+  if (has("tyre", "tread", "sidewall", "bulge", "cord")) return "tyres";
+  if (has("suspension", "bush", "shock", "arm", "ball joint", "drop link", "wishbone")) return "suspension";
+  if (has("brake", "disc", "pad", "caliper", "handbrake", "parking brake", "abs", "brake pipe", "brake hose"))
     return "brakes";
-  if (has("tyre", "tire", "tread", "sidewall", "bulge", "cord", "wheel", "rim", "alloy"))
-    return "tyres";
-  if (has("suspension", "shock", "strut", "spring", "damper", "wishbone", "control arm", "bush", "ball joint", "drop link"))
-    return "suspension";
-  if (has("steering", "rack", "track rod", "tie rod", "power steering", "column", "joint"))
-    return "steering";
-  if (has("exhaust", "silencer", "muffler", "tailpipe", "flexi", "flexible joint"))
-    return "exhaust";
-  if (has("emission", "smoke", "lambda", "o2 sensor", "catalyst", "dpf", "egr", "engine management", "check engine"))
-    return "emissions";
-  if (has("oil leak", "leak", "coolant", "brake fluid", "power steering fluid"))
-    return "leaks_fluids";
-  if (has("light", "lamp", "headlamp", "indicator", "fog", "wiper", "washer", "windscreen", "mirror"))
-    return "lights_visibility";
-  if (has("seat belt", "seatbelt", "pretensioner", "airbag", "srs"))
-    return "seatbelts_srs";
-  if (has("battery", "alternator", "starter", "wiring", "electrical", "warning lamp", "dashboard warning"))
-    return "electrical";
-  if (has("door", "bonnet", "boot", "tailgate", "latch", "hinge", "bumper", "panel"))
-    return "body_structure";
-
-  if (has("excessive play", "insecure", "loose", "movement", "worn", "deteriorated", "fractured", "cracked"))
-    return "suspension";
-
-  if (has("not operating correctly", "operation impaired", "does not operate", "malfunction", "fails to operate"))
-    return "electrical";
-
-  if (has("mounting", "bracket", "support", "carrier", "fixing", "secure", "retaining"))
-    return "body_structure";
-
+  if (has("exhaust", "silencer", "flexi", "flexible joint", "muffler")) return "exhaust";
+  if (has("corrosion", "rust", "subframe", "chassis", "structural", "mounting")) return "corrosion";
+  if (has("emission", "lambda", "dpf", "egr", "catalyst", "smoke", "o2 sensor")) return "emissions";
   return "other";
 }
 
-type RiskBand = "HIGH" | "MEDIUM" | "LOW";
-type MotRisk = { score: number; band: RiskBand };
+/* =======================
+   Risk Scoring (Layer-1)
+======================= */
 
 function scoreMotRisk(input: {
   ageYears?: number | null;
   mileage?: number | null;
   latestResult?: string | null;
-  totalFails: number;
-  totalAdvisories: number;
-  dangerousCount: number;
-  majorCount: number;
   repeatThemes: Record<string, number>;
-}): MotRisk {
+}): { score: number; band: RiskBand } {
   let score = 20;
 
   if (typeof input.ageYears === "number") {
     if (input.ageYears >= 15) score += 20;
-    else if (input.ageYears >= 10) score += 12;
-    else if (input.ageYears >= 6) score += 6;
+    else if (input.ageYears >= 10) score += 15;
+    else if (input.ageYears >= 6) score += 8;
   }
 
   if (typeof input.mileage === "number") {
     if (input.mileage >= 160000) score += 18;
-    else if (input.mileage >= 120000) score += 12;
-    else if (input.mileage >= 80000) score += 7;
+    else if (input.mileage >= 120000) score += 15;
+    else if (input.mileage >= 80000) score += 8;
   }
 
-  if ((input.latestResult || "").toUpperCase().includes("FAIL")) score += 18;
+  if ((input.latestResult || "").toUpperCase().includes("FAIL")) score += 20;
 
-  score += Math.min(20, input.totalFails * 3);
-  score += Math.min(15, input.totalAdvisories * 1);
-  score += Math.min(25, input.dangerousCount * 10);
-  score += Math.min(15, input.majorCount * 5);
+  // Repeat-theme pressure
+  score += Math.min(30, Object.values(input.repeatThemes).filter((n) => n >= 2).length * 5);
 
-  const repeats = Object.values(input.repeatThemes).filter((n) => n >= 2).length;
-  score += Math.min(10, repeats * 3);
+  score = Math.min(100, Math.max(0, score));
+  return { score, band: score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW" };
+}
+
+/* =======================
+   FIX vs MONITOR (Layer-2)
+======================= */
+
+function decideFixOrIgnore(
+  patterns: {
+    theme: string;
+    repeat_count: number;
+    last_seen_year: number;
+    trend: "worsening" | "stable" | "improving";
+  }[]
+): FixDecision[] {
+  const currentYear = new Date().getFullYear();
+
+  return patterns.map((p) => {
+    const recent = p.last_seen_year >= currentYear - 1; // seen this year/last year
+    const repeated = p.repeat_count >= 3;
+    const worsening = p.trend === "worsening";
+
+    if (recent && repeated && worsening) {
+      return {
+        theme: p.theme,
+        decision: "FIX",
+        confidence: "HIGH",
+        reason: "Repeated defects in recent MOTs with a worsening pattern",
+      };
+    }
+
+    // If it's repeated but not worsening, it’s still worth monitoring carefully (MEDIUM).
+    return {
+      theme: p.theme,
+      decision: "MONITOR",
+      confidence: repeated ? "MEDIUM" : "HIGH",
+      reason: repeated
+        ? "Repeated but not clearly worsening; monitor and inspect before MOT"
+        : "No strong evidence of worsening defects in recent MOTs",
+    };
+  });
+}
+
+/* =======================
+   COST IMPACT (Layer-3)
+======================= */
+
+const COST_RANGES: Record<string, { min: number; max: number }> = {
+  suspension: { min: 300, max: 1200 },
+  brakes: { min: 150, max: 600 },
+  tyres: { min: 120, max: 450 },
+  exhaust: { min: 150, max: 700 },
+  corrosion: { min: 300, max: 2500 },
+  emissions: { min: 100, max: 900 },
+  other: { min: 150, max: 600 },
+};
+
+function estimateCost(decisions: FixDecision[]) {
+  let minTotal = 0;
+  let maxTotal = 0;
+
+  const breakdown = decisions
+    .filter((d) => d.decision === "FIX")
+    .map((d) => {
+      const r = COST_RANGES[d.theme] || COST_RANGES.other;
+      minTotal += r.min;
+      maxTotal += r.max;
+      return { theme: d.theme, range: `£${r.min} – £${r.max}` };
+    });
+
+  return { minTotal, maxTotal, breakdown };
+}
+
+/* =======================
+   MOT READINESS (Layer-4)
+======================= */
+
+function calculateMotReadiness(input: {
+  decisions: FixDecision[];
+  patterns: { trend: "worsening" | "stable" | "improving" }[];
+  riskBand: RiskBand;
+  estimatedMaxCost: number;
+}) {
+  let score = 100;
+  const reasons: string[] = [];
+  const improvements: string[] = [];
+
+  const fixCount = input.decisions.filter((d) => d.decision === "FIX").length;
+  if (fixCount) {
+    score -= fixCount * 25;
+    reasons.push(`${fixCount} critical system(s) require immediate repair`);
+    improvements.push(`Fix ${fixCount} critical item(s) (+${fixCount * 25})`);
+  }
+
+  const worseningCount = input.patterns.filter((p) => p.trend === "worsening").length;
+  if (worseningCount) {
+    score -= worseningCount * 15;
+    reasons.push("Worsening defect patterns detected");
+    improvements.push(`Resolve worsening patterns (+${worseningCount * 15})`);
+  }
+
+  if (input.riskBand === "HIGH") {
+    score -= 15;
+    reasons.push("Overall MOT risk is high");
+    improvements.push("Reduce overall risk (+15)");
+  }
+
+  if (input.estimatedMaxCost > 1000) {
+    score -= 10;
+    reasons.push("High expected repair cost before MOT");
+    improvements.push("Reduce repair cost exposure (+10)");
+  }
 
   score = Math.max(0, Math.min(100, score));
 
-  const band: RiskBand = score >= 70 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
-  return { score, band };
+  let label: "READY" | "FAIR" | "POOR" | "NOT READY" = "READY";
+  if (score < 40) label = "NOT READY";
+  else if (score < 60) label = "POOR";
+  else if (score < 80) label = "FAIR";
+
+  return { score, label, reasons, improvements };
 }
 
-function pickTopThemes(repeatThemes: Record<string, number>, topN = 3) {
-  return Object.entries(repeatThemes)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, topN)
-    .map(([k, v]) => ({ theme: k, count: v }));
+/* =======================
+   REPAIR PRIORITY (Layer-5)
+======================= */
+
+function buildRepairTimeline(decisions: FixDecision[]) {
+  return decisions.map((d) =>
+    d.decision === "FIX"
+      ? { theme: d.theme, priority: "NOW" as const, reason: "High MOT failure probability" }
+      : { theme: d.theme, priority: "BEFORE NEXT MOT" as const, reason: "Monitor condition" }
+  );
 }
 
-async function tool_get_mot_intelligence_v2(vrm: string): Promise<{
+/* =======================
+   OWNERSHIP DECISION (Layer-6)
+======================= */
+
+function decideKeepOrReplace(input: {
+  ageYears: number | null;
+  mileage: number | null;
+  estimatedMaxCost: number;
+  readinessScore: number;
+  riskBand: RiskBand;
+  fixNowCount: number;
+}) {
+  let signals = 0;
+  const reasons: string[] = [];
+
+  if (input.ageYears !== null && input.ageYears >= 10) {
+    signals++;
+    reasons.push("Vehicle age exceeds 10 years");
+  }
+
+  if (input.mileage !== null && input.mileage >= 120000) {
+    signals++;
+    reasons.push("High mileage increases long-term maintenance risk");
+  }
+
+  if (input.estimatedMaxCost >= 1500) {
+    signals += 2;
+    reasons.push("Expected MOT-related repairs are expensive");
+  }
+
+  if (input.readinessScore <= 50) {
+    signals++;
+    reasons.push("Vehicle is poorly prepared for an immediate MOT");
+  }
+
+  if (input.fixNowCount >= 2) {
+    signals++;
+    reasons.push("Multiple critical repairs required immediately");
+  }
+
+  if (input.riskBand === "HIGH") {
+    signals++;
+    reasons.push("High probability of recurring MOT issues");
+  }
+
+  let decision: "KEEP" | "CONSIDER_REPLACING" | "REPLACE" = "KEEP";
+  if (signals >= 5) decision = "REPLACE";
+  else if (signals >= 3) decision = "CONSIDER_REPLACING";
+
+  return {
+    decision,
+    score: signals,
+    reasons,
+    keepScenario: ["Expect continued MOT preparation costs", "Repairs may stabilise short-term reliability"],
+    replaceScenario: ["Avoid escalating repair expenses", "Improve reliability and ownership predictability"],
+  };
+}
+
+/* =======================
+   LAYER-7: EXECUTIVE SYNTHESIS
+   (Final decision package + next actions)
+======================= */
+
+function buildLayer7(input: {
   vrm: string;
-  vehicle: { make?: string; model?: string; fuelType?: string; colour?: string; ageYears?: number | null };
-  latest: { result?: string; completedDate?: string; expiryDate?: string; mileage?: number | null };
-  counts: { fails: number; advisories: number; dangerous: number; major: number };
-  topThemes: Array<{ theme: string; count: number }>;
-  risk: { score: number; band: "LOW" | "MEDIUM" | "HIGH" };
-  actionPlan: string[];
-}> {
-  const url = new URL(MOT_HISTORY_API_URL);
-  url.searchParams.set("vrm", vrm);
+  vehicle: { ageYears: number | null; mileage: number | null };
+  risk: { score: number; band: RiskBand };
+  readiness: { score: number; label: "READY" | "FAIR" | "POOR" | "NOT READY"; reasons: string[]; improvements: string[] };
+  timeline: Array<{ theme: string; priority: "NOW" | "BEFORE NEXT MOT"; reason: string }>;
+  cost: { minTotal: number; maxTotal: number; breakdown: Array<{ theme: string; range: string }> };
+  ownership: { decision: "KEEP" | "CONSIDER_REPLACING" | "REPLACE"; reasons: string[] };
+}) {
+  const fixNow = input.timeline.filter((t) => t.priority === "NOW").map((t) => t.theme);
+  const monitor = input.timeline.filter((t) => t.priority !== "NOW").map((t) => t.theme);
 
-  const r = await fetch(url.toString(), { method: "GET" });
-  if (!r.ok) throw new Error(`MOT history fetch failed (${r.status})`);
+  const topFixNow = fixNow.slice(0, 3);
+  const topMonitor = monitor.slice(0, 3);
+
+  const headline =
+    input.ownership.decision === "KEEP"
+      ? "Ownership outlook: KEEP (with targeted MOT preparation)."
+      : input.ownership.decision === "CONSIDER_REPLACING"
+      ? "Ownership outlook: CONSIDER REPLACING (cost/risk signals elevated)."
+      : "Ownership outlook: REPLACE (high probability of escalating costs).";
+
+  const costLine =
+    input.cost.maxTotal > 0
+      ? `Estimated MOT-related repairs (if you fix “NOW” items): £${input.cost.minTotal} – £${input.cost.maxTotal}.`
+      : "Estimated MOT-related repairs: not enough data to estimate.";
+
+  const readinessLine = `MOT readiness: ${input.readiness.score}/100 (${input.readiness.label}).`;
+  const riskLine = `Risk score: ${input.risk.score}/100 (${input.risk.band}).`;
+
+  const actionLines: string[] = [];
+  if (topFixNow.length) {
+    actionLines.push(`Fix NOW (highest impact): ${topFixNow.join(", ")}.`);
+  } else {
+    actionLines.push("Fix NOW: none strongly indicated from pattern data (still do a basic pre-MOT inspection).");
+  }
+
+  if (topMonitor.length) {
+    actionLines.push(`Monitor / plan before next MOT: ${topMonitor.join(", ")}.`);
+  }
+
+  // Recommended next step text
+  let next =
+    "Open MOT Predictor to review the full MOT history and book an inspection focused on the “Fix NOW” systems.";
+
+  if (input.ownership.decision === "REPLACE") {
+    next =
+      "Strongly consider replacing this vehicle. If you still proceed, fix the “Fix NOW” items first and reassess costs.";
+  } else if (input.ownership.decision === "CONSIDER_REPLACING") {
+    next =
+      "Get a repair quote for the “Fix NOW” items. If quotes approach the upper range, consider replacing the vehicle.";
+  } else if (input.readiness.label === "NOT READY") {
+    next = "Do not attempt an MOT immediately. Fix the “Fix NOW” items, then re-check readiness.";
+  }
+
+  // Extra evidence lines
+  const evidence: string[] = [];
+  if (input.vehicle.ageYears !== null) evidence.push(`Vehicle age: ~${input.vehicle.ageYears.toFixed(1)} years.`);
+  if (input.vehicle.mileage !== null) evidence.push(`Latest recorded mileage: ${input.vehicle.mileage.toLocaleString()} miles.`);
+
+  return {
+    headline,
+    summaryLines: [riskLine, readinessLine, costLine, ...evidence],
+    actionLines,
+    recommendedNextStep: next,
+  };
+}
+
+/* =======================
+   MOT Intelligence v3 (Layers 1–6)
+======================= */
+
+const MOT_INTELLIGENCE_VERSION = "mot_intelligence_v3_layer7";
+const MOT_HISTORY_API_URL = process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+async function tool_get_mot_intelligence_v3(vrm: string) {
+  const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${encodeURIComponent(vrm)}`, { method: "GET" });
+  if (!r.ok) throw new Error(`MOT fetch failed (${r.status})`);
 
   const data = (await r.json()) as MotHistory;
 
-  const tests = Array.isArray(data?.motTests) ? data.motTests : [];
+  const testsRaw = Array.isArray(data.motTests) ? data.motTests : [];
+  const tests = sortTestsNewestFirst(testsRaw);
   const latest = tests[0] || {};
 
   const ageYears = yearsSince(data.firstUsedDate || data.registrationDate);
-  const mileage = toNum(latest?.odometerValue);
-
-  let fails = 0;
-  let advisories = 0;
-  let dangerous = 0;
-  let major = 0;
+  const mileage = parseMileage(latest.odometerValue);
 
   const themeCounts: Record<string, number> = {};
+  const stats: Record<string, ThemeYearStat> = {};
 
   for (const t of tests) {
-    const result = (t?.testResult || "").toUpperCase();
-    if (result.includes("FAIL")) fails++;
+    const year = t.completedDate ? new Date(t.completedDate).getFullYear() : null;
+    for (const d of t.defects || []) {
+      if (!d.text || !year) continue;
+      const theme = themeFromText(d.text);
+      themeCounts[theme] = (themeCounts[theme] || 0) + 1;
 
-    const defects = Array.isArray(t?.defects) ? t.defects : [];
-    for (const d of defects) {
-      const dtype = (d?.type || "").toUpperCase();
-      const txt = d?.text || "";
-
-      if (dtype.includes("ADVISORY")) advisories++;
-      if (dtype.includes("DANG")) dangerous++;
-      if (dtype.includes("MAJOR")) major++;
-
-      if (txt) {
-        const theme = themeFromText(txt);
-        themeCounts[theme] = (themeCounts[theme] || 0) + 1;
+      if (!stats[theme]) {
+        stats[theme] = { first_seen: year, last_seen: year, count: 1, years: [year] };
+      } else {
+        stats[theme].count++;
+        stats[theme].years.push(year);
+        stats[theme].last_seen = Math.max(stats[theme].last_seen, year);
       }
     }
   }
 
-  const topThemes = pickTopThemes(themeCounts, 3);
-  const latestResult = latest?.testResult || null;
+  // Pattern trend logic (minimal hardening, still lightweight):
+  // - worsening if occurrences in last 2 years >= occurrences in earlier years AND last_seen is recent
+  // - improving if not seen for 3+ years
+  const currentYear = new Date().getFullYear();
+  const patterns = Object.entries(stats).map(([theme, s]) => {
+    const recentCount = s.years.filter((y) => y >= currentYear - 1).length; // this year/last year
+    const olderCount = s.years.filter((y) => y < currentYear - 1).length;
+
+    let trend: "worsening" | "stable" | "improving" = "stable";
+    if (s.last_seen < currentYear - 3) trend = "improving";
+    else if (s.last_seen >= currentYear - 1 && recentCount >= Math.max(2, olderCount)) trend = "worsening";
+
+    return { theme, repeat_count: s.count, last_seen_year: s.last_seen, trend };
+  });
+
+  const decisions = decideFixOrIgnore(patterns);
+  const cost = estimateCost(decisions);
 
   const risk = scoreMotRisk({
     ageYears,
     mileage,
-    latestResult,
-    totalFails: fails,
-    totalAdvisories: advisories,
-    dangerousCount: dangerous,
-    majorCount: major,
+    latestResult: latest.testResult,
     repeatThemes: themeCounts,
   });
 
-  const actionPlan: string[] = [];
-  for (const t of topThemes) {
-    if (t.theme === "suspension") {
-      actionPlan.push("Suspension/steering: inspect bushes, arms, shocks; fix play/noise.");
-    } else if (t.theme === "brakes") {
-      actionPlan.push("Brakes: check pads/discs/pipes; address corrosion/leaks early.");
-    } else if (t.theme === "tyres") {
-      actionPlan.push("Tyres: tread/sidewall; check alignment and pressures.");
-    } else if (t.theme === "corrosion") {
-      actionPlan.push("Corrosion: inspect brake pipes, subframe/chassis areas; treat/replace as needed.");
-    } else if (t.theme === "emissions") {
-      actionPlan.push("Emissions: scan for warning lights; ensure service items and sensors are healthy.");
-    } else if (t.theme === "steering") {
-      actionPlan.push("Steering: inspect rack, track rods, joints; address play or leaks.");
-    } else if (t.theme === "exhaust") {
-      actionPlan.push("Exhaust: check for leaks or damaged mounts before emissions test.");
-    } else if (t.theme === "seatbelts_srs") {
-      actionPlan.push("Safety systems: check seatbelts and airbag/SRS warning lights.");
-    } else if (t.theme === "electrical") {
-      actionPlan.push("Electrical: resolve warning lights; check battery and alternator.");
-    } else if (t.theme === "body_structure") {
-      actionPlan.push("Body/structure: inspect doors, bonnet latches, and body condition.");
-    } else {
-      actionPlan.push(`Review repeat issue theme: ${t.theme}.`);
-    }
-  }
+  const readiness = calculateMotReadiness({
+    decisions,
+    patterns,
+    riskBand: risk.band,
+    estimatedMaxCost: cost.maxTotal,
+  });
+
+  const timeline = buildRepairTimeline(decisions);
+
+  const ownership = decideKeepOrReplace({
+    ageYears,
+    mileage,
+    estimatedMaxCost: cost.maxTotal,
+    readinessScore: readiness.score,
+    riskBand: risk.band,
+    fixNowCount: decisions.filter((d) => d.decision === "FIX").length,
+  });
 
   return {
     vrm,
     vehicle: {
-      make: data?.make,
-      model: data?.model,
-      fuelType: data?.fuelType,
-      colour: data?.primaryColour,
+      make: data.make,
+      model: data.model,
+      fuelType: data.fuelType,
+      colour: data.primaryColour,
       ageYears,
-    },
-    latest: {
-      result: latest?.testResult,
-      completedDate: latest?.completedDate,
-      expiryDate: latest?.expiryDate,
       mileage,
+      latestResult: latest.testResult || null,
+      latestCompletedDate: latest.completedDate || null,
     },
-    counts: { fails, advisories, dangerous, major },
-    topThemes,
+    patterns,
+    decisions,
     risk,
-    actionPlan: actionPlan.length ? actionPlan : ["Open MOT Predictor to review advisories and prioritise repairs."],
+    readiness,
+    timeline,
+    cost,
+    ownership,
   };
 }
 
-async function tool_get_mot_risk_summary(input: { vehicle_age_years?: number; mileage?: number }) {
-  const age = input.vehicle_age_years ?? null;
-  const miles = input.mileage ?? null;
+/* =======================
+   Response Helpers
+======================= */
 
-  let risk: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM";
-  if ((age !== null && age >= 12) || (miles !== null && miles >= 120000)) risk = "HIGH";
-  if (age !== null && miles !== null && age <= 4 && miles <= 40000) risk = "LOW";
-
-  const drivers: string[] = [];
-  drivers.push(
-    age !== null
-      ? `Vehicle age (${age} years) increases probability of wear-related advisories.`
-      : `Vehicle age increases probability of wear-related advisories.`
-  );
-  drivers.push(
-    miles !== null
-      ? `Mileage (${miles.toLocaleString()} miles) correlates with wear on brakes, suspension, and tyres.`
-      : `Mileage correlates with wear on brakes, suspension, and tyres.`
-  );
-
-  const checklist = [
-    "Brakes: pads/discs, brake fluid, handbrake effectiveness",
-    "Suspension/steering: bushes, shocks, ball joints",
-    "Tyres: tread depth, sidewall damage, alignment",
-    "Lights & visibility: bulbs, lenses, wipers, washer fluid",
-    "Emissions readiness: warning lights, service history",
-  ];
-
-  return { risk_band: risk, drivers, checklist };
-}
-
-function oosResponse(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
+function makeOOS(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
   return {
     status: "out_of_scope",
     intent: "unknown_out_of_scope",
     sections: {
       understanding: "This request is outside the current Autodun AI Assistant scope.",
-      analysis: [
-        "Autodun AI Assistant is a bounded routing agent.",
-        "Supported workflows in v1: MOT preparation, EV charging readiness, used-car buying checks.",
-      ],
-      recommended_next_step:
-        "If your question relates to MOT risk, EV charging, or a used-car checklist, rephrase it and I’ll route you correctly.",
+      analysis: ["Supported workflow here: MOT Intelligence (Layered).", "Try: “MOT for ML58FOU”."],
+      recommended_next_step: "Send your VRM (example: ML58FOU) to generate MOT Intelligence.",
     },
     actions: [
       { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
-    meta: { request_id: id, tool_calls },
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["L1_intent", "L2_extract", "L3_fetch", "L4_parse", "L5_score", "L6_decide", "L7_synth"],
+    },
   };
 }
 
-function needsClarificationResponse(
-  id: string,
-  intent: AgentIntent,
-  tool_calls: AgentResponse["meta"]["tool_calls"],
-  message: string,
-  next: string
-): AgentResponse {
+function makeNeedsClarification(id: string, intent: AgentIntent, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
   return {
     status: "needs_clarification",
     intent,
     sections: {
-      understanding: message,
-      analysis: ["Provide the missing detail so I can run the right tool call."],
-      recommended_next_step: next,
+      understanding: "I can run MOT Intelligence, but I need your VRM.",
+      analysis: ["Example: “MOT for ML58FOU”", "Tip: You can paste the VRM only."],
+      recommended_next_step: "Reply with your VRM (example: ML58FOU).",
     },
     actions: [
       { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
-    meta: { request_id: id, tool_calls },
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["L1_intent", "L2_extract", "L3_fetch", "L4_parse", "L5_score", "L6_decide", "L7_synth"],
+    },
   };
 }
 
-async function tool_get_used_car_buyer_checklist() {
-  return {
-    must_check: [
-      "MOT history pattern: repeated advisories/fails in the same area",
-      "Service evidence: key interval items where applicable",
-      "Tyres/brakes/suspension condition",
-      "Warning lights and (if possible) an OBD scan",
-      "Corrosion / accident signs",
-    ],
-    red_flags: [
-      "Seller avoids V5C, receipts, or clear history",
-      "Mileage story does not match wear",
-      "Repeated advisories with no evidence of repair",
-    ],
-  };
-}
-
-// -----------------------
-// Handler
-// -----------------------
+/* =======================
+   Handler
+======================= */
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const id = requestId();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // ✅ Accept body as either:
-  // - { text: "..." }
-  // - "..." (string)
-  const rawBody: any = req.body;
-  const text =
-    (typeof rawBody === "string" ? rawBody : typeof rawBody?.text === "string" ? rawBody.text : "")
-      .toString()
-      .trim();
-
-  if (text.length < 3 || text.length > 800) {
+  if (req.method !== "POST") {
     const out: AgentResponse = {
-      status: "needs_clarification",
+      status: "error",
       intent: "unknown_out_of_scope",
       sections: {
-        understanding: "Your message is missing or too short.",
-        analysis: ["Send a short goal like: “chargers near SW1A 1AA” or “MOT for ML58FOU”."],
-        recommended_next_step: "Try: chargers near SW1A 1AA",
+        understanding: "Method not allowed.",
+        analysis: ["Use POST with { text: \"MOT for ML58FOU\" }."],
+        recommended_next_step: "Send a POST request.",
       },
-      actions: [
-        { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-      ],
-      meta: { request_id: id, tool_calls: [] },
+      actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" }],
+      meta: { request_id: id, tool_calls: [], version: MOT_INTELLIGENCE_VERSION },
     };
-    return res.status(200).json(out);
+    return res.status(405).json(out);
   }
+
+  const raw = req.body;
+  const text = (typeof raw === "string" ? raw : typeof raw?.text === "string" ? raw.text : "").toString().trim();
 
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
+  // Keep this endpoint canonical for MOT intelligence
+  if (intent !== "mot_preparation") {
+    return res.status(200).json(makeOOS(id, tool_calls));
+  }
+
+  if (text.length < 2 || text.length > 800) {
+    return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+  }
+
+  const vrm = extractVRM(text);
+  if (!vrm) {
+    return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+  }
+
   try {
-    if (intent === "unknown_out_of_scope") return res.status(200).json(oosResponse(id, tool_calls));
-
-    // ---------------- MOT ----------------
-    if (intent === "mot_preparation") {
-      const vrm = extractVRM(text);
-      const age = extractAgeYears(text);
-      const miles = extractMileage(text);
-
-      if (vrm) {
-        const tMot = Date.now();
-        const intel = await tool_get_mot_intelligence_v2(vrm);
-        tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - tMot });
-
-        const latestLine = `Latest MOT: ${String(intel.latest.result || "UNKNOWN")} (${String(
-          intel.latest.completedDate || "n/a"
-        )}).`;
-        const expiryLine = intel.latest.expiryDate ? `Expiry: ${intel.latest.expiryDate}.` : "";
-        const mileageLine =
-          typeof intel.latest.mileage === "number" ? `Mileage: ${intel.latest.mileage.toLocaleString()} mi.` : "";
-
-        const countsLine = `Counts (all tests): Advisories ${intel.counts.advisories}, Fails ${intel.counts.fails}, Major ${intel.counts.major}, Dangerous ${intel.counts.dangerous}.`;
-
-        const themeLine =
-          intel.topThemes.length > 0
-            ? `Repeat themes: ${intel.topThemes.map((t) => `${t.theme} (${t.count})`).join(", ")}.`
-            : "Repeat themes: none detected.";
-
-        const riskLine = `Risk score: ${intel.risk.score}/100 (${intel.risk.band}).`;
-
-        const out: AgentResponse = {
-          status: "ok",
-          intent,
-          sections: {
-            understanding: `MOT intelligence for ${vrm}.`,
-            analysis: [
-              latestLine,
-              ...(expiryLine ? [expiryLine] : []),
-              ...(mileageLine ? [mileageLine] : []),
-              countsLine,
-              themeLine,
-              riskLine,
-              "Priority action plan:",
-              ...intel.actionPlan.slice(0, 3).map((x) => `• ${x}`),
-            ],
-            recommended_next_step:
-              "Open MOT Predictor to view full MOT history, then fix the top repeat themes before the next test.",
-          },
-          actions: [
-            { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
-            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-          ],
-          meta: { request_id: id, tool_calls },
-        };
-
-        return res.status(200).json(out);
-      }
-
-      if (age === null && miles === null) {
-        return res
-          .status(200)
-          .json(
-            needsClarificationResponse(
-              id,
-              intent,
-              tool_calls,
-              "You want MOT guidance, but key details are missing.",
-              "Reply with your VRM (example: ML58FOU) or say “10 years old, 85k miles”."
-            )
-          );
-      }
-
-      const t0 = Date.now();
-      const mot = await tool_get_mot_risk_summary({ vehicle_age_years: age ?? undefined, mileage: miles ?? undefined });
-      tool_calls.push({ name: "get_mot_risk_summary", ok: true, ms: Date.now() - t0 });
-
-      const out: AgentResponse = {
-        status: "ok",
-        intent,
-        sections: {
-          understanding: "You want an MOT risk view and what to check before the test.",
-          analysis: [`Risk band: ${mot.risk_band}.`, ...mot.drivers, ...mot.checklist.slice(0, 5)],
-          recommended_next_step: "Open MOT Predictor to run a personalised check (VRM-based) and next actions.",
-        },
-        actions: [
-          { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
-          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-        ],
-        meta: { request_id: id, tool_calls },
-      };
-      return res.status(200).json(out);
-    }
-
-    // ---------------- EV ----------------
-    if (intent === "ev_charging_readiness") {
-      const postcode = extractPostcode(text);
-
-      if (!postcode) {
-        return res
-          .status(200)
-          .json(
-            needsClarificationResponse(
-              id,
-              intent,
-              tool_calls,
-              "You want EV charging options near you.",
-              "Reply with your UK postcode (example: SW1A 1AA)."
-            )
-          );
-      }
-
-      const tStations = Date.now();
-      const stations = await getNearbyChargers({ postcode, radiusMiles: 10, limit: 5 });
-      tool_calls.push({ name: "ev_finder_stations", ok: true, ms: Date.now() - tStations });
-
-      const lines =
-        stations.length > 0
-          ? [
-              `Top chargers near ${postcode}:`,
-              ...stations.map((s: any, i: number) => {
-                const dist = typeof s?.distance_miles === "number" ? ` — ${s.distance_miles.toFixed(1)} mi` : "";
-                const addr = s?.address ? ` — ${s.address}` : "";
-                const con =
-                  Array.isArray(s?.connectorsDetailed) && s.connectorsDetailed.length
-                    ? ` — ${s.connectorsDetailed.map((c: any) => c?.type).filter(Boolean).join(", ")}`
-                    : "";
-                return `${i + 1}. ${s?.name || "Charging location"}${dist}${addr}${con}`;
-              }),
-              "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
-            ]
-          : [`No stations were returned for that postcode.`, "Open EV Charger Finder to search on the map."];
-
-      const out: AgentResponse = {
-        status: "ok",
-        intent,
-        sections: {
-          understanding: `EV charging options for ${postcode}.`,
-          analysis: lines,
-          recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
-        },
-        actions: [
-          { label: "Open EV Charger Finder", href: `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`, type: "primary" },
-          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-        ],
-        meta: { request_id: id, tool_calls },
-      };
-      return res.status(200).json(out);
-    }
-
-    // ---------------- Used car ----------------
     const t0 = Date.now();
-    const used = await tool_get_used_car_buyer_checklist();
-    tool_calls.push({ name: "get_used_car_buyer_checklist", ok: true, ms: Date.now() - t0 });
+    const intel = await tool_get_mot_intelligence_v3(vrm);
+    tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
+
+    const layer7 = buildLayer7({
+      vrm,
+      vehicle: { ageYears: intel.vehicle.ageYears, mileage: intel.vehicle.mileage },
+      risk: intel.risk,
+      readiness: intel.readiness,
+      timeline: intel.timeline,
+      cost: intel.cost,
+      ownership: intel.ownership,
+    });
 
     const out: AgentResponse = {
       status: "ok",
-      intent: "used_car_buyer",
+      intent,
       sections: {
-        understanding: "You want a used-car checklist to reduce buying risk.",
-        analysis: [...used.must_check.slice(0, 5), "Red flags:", ...used.red_flags.slice(0, 3)],
-        recommended_next_step: "Use MOT Predictor to review MOT history before committing.",
+        understanding: `MOT Intelligence (Layers 1–7) for ${vrm}. ${layer7.headline}`,
+        analysis: [
+          ...layer7.summaryLines,
+          "Action plan:",
+          ...layer7.actionLines.map((x) => `• ${x}`),
+          ...(intel.cost.breakdown.length
+            ? ["Cost breakdown (Fix NOW items):", ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`)]
+            : []),
+        ],
+        recommended_next_step: layer7.recommendedNextStep,
       },
       actions: [
-        { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+        { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls },
+      meta: {
+        request_id: id,
+        tool_calls,
+        version: MOT_INTELLIGENCE_VERSION,
+        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+      },
     };
+
     return res.status(200).json(out);
   } catch (e: any) {
     const out: AgentResponse = {
       status: "error",
       intent,
       sections: {
-        understanding: "We could not complete the analysis.",
-        analysis: [
-          "A temporary error occurred while running the agent.",
-          `Debug hint: ${String(e?.message || e || "unknown error")}`,
-        ],
-        recommended_next_step: "Please try again.",
+        understanding: "We could not complete MOT Intelligence.",
+        analysis: ["A temporary error occurred while running the layered engine.", `Debug hint: ${String(e?.message || e || "unknown error")}`],
+        recommended_next_step: "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
-        { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls },
+      meta: {
+        request_id: id,
+        tool_calls,
+        version: MOT_INTELLIGENCE_VERSION,
+        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+      },
     };
-    return res.status(200).json(out); // ✅ always return full shape to avoid UI crash
+    return res.status(200).json(out);
   }
 }
