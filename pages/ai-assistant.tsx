@@ -27,7 +27,6 @@ const EXAMPLES = [
   "MOT intelligence for ML58FOU",
   "My car is 8 years old with 65000 miles — what should I check before MOT?",
   "chargers near SW1A 1AA",
-  "I’m buying a used car — what should I check before purchase and in MOT history?",
 ] as const;
 
 const GUIDED_CHOICES: Array<{ label: string; prompt: string; hint: string }> = [
@@ -58,34 +57,23 @@ function safeArray(x: any): string[] {
   return Array.isArray(x) ? x.map((v) => safeText(v)) : [];
 }
 
-/**
- * Minimal endpoint routing:
- * - EV prompts -> /api/agent/ev
- * - Used-car prompts -> /api/agent/used
- * - Default -> /api/agent/run (MOT Intelligence Layers 1–7)
- */
+/* =========================
+   ✅ NEW: minimal endpoint router
+========================= */
 function pickEndpoint(prompt: string): string {
   const t = (prompt || "").toLowerCase();
 
-  // EV first
-  if (
-    ["charger", "charging", "charge", "postcode", "post code", "near me", "ev", "electric"].some((k) =>
-      t.includes(k)
-    )
-  ) {
+  // EV intent → EV agent
+  if (["charger", "charging", "postcode", "near me", "ev", "electric"].some((k) => t.includes(k))) {
     return "/api/agent/ev";
   }
 
-  // Used-car workflow
-  if (
-    ["used car", "buying", "purchase", "seller", "v5", "hpi", "cat s", "cat n", "write off", "inspection"].some(
-      (k) => t.includes(k)
-    )
-  ) {
+  // Used car intent → used agent
+  if (["used car", "buying", "purchase", "v5", "hpi", "cat s", "cat n"].some((k) => t.includes(k))) {
     return "/api/agent/used";
   }
 
-  // Default: MOT Intelligence (Layers 1–7)
+  // Default → MOT layered agent
   return "/api/agent/run";
 }
 
@@ -98,13 +86,12 @@ function Badge({ children }: { children: React.ReactNode }) {
 }
 
 function StatusChip({ status }: { status: AgentStatus }) {
-  const base = "rounded-full px-3 py-1 text-xs font-medium border inline-flex items-center gap-2";
+  const base =
+    "rounded-full px-3 py-1 text-xs font-medium border inline-flex items-center gap-2";
   if (status === "ok")
     return <span className={`${base} border-emerald-900 bg-emerald-950/40 text-emerald-200`}>OK</span>;
   if (status === "needs_clarification")
-    return (
-      <span className={`${base} border-amber-900 bg-amber-950/40 text-amber-200`}>Needs clarification</span>
-    );
+    return <span className={`${base} border-amber-900 bg-amber-950/40 text-amber-200`}>Needs clarification</span>;
   if (status === "out_of_scope")
     return <span className={`${base} border-slate-700 bg-slate-950/40 text-slate-200`}>Out of scope</span>;
   return <span className={`${base} border-red-900 bg-red-950/40 text-red-200`}>Error</span>;
@@ -168,9 +155,7 @@ export default function AIAssistantPage() {
     setLatestRes(null);
 
     try {
-      const endpoint = pickEndpoint(finalText);
-
-      const r = await fetch(endpoint, {
+      const r = await fetch(pickEndpoint(finalText), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -195,17 +180,19 @@ export default function AIAssistantPage() {
             analysis: safeArray(data?.sections?.analysis).length
               ? safeArray(data?.sections?.analysis)
               : [safeText((data as any)?.error) || "The request failed."],
-            recommended_next_step: data?.sections?.recommended_next_step ?? "Please try again.",
+            recommended_next_step:
+              data?.sections?.recommended_next_step ?? "Please try again.",
           },
-          actions:
-            data?.actions ?? [
-              { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
-              { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
-            ],
+          actions: data?.actions ?? [
+            { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
+            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "secondary" },
+          ],
           meta: data?.meta,
         });
         throw new Error(
-          data?.sections?.recommended_next_step || safeText((data as any)?.error) || "Request failed"
+          data?.sections?.recommended_next_step ||
+            safeText((data as any)?.error) ||
+            "Request failed"
         );
       }
 
@@ -255,14 +242,14 @@ export default function AIAssistantPage() {
       latest_response: latestRes,
       last_successful_ok_response: lastOkRes,
     };
-    navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).catch(() => {});
+    navigator.clipboard
+      .writeText(JSON.stringify(payload, null, 2))
+      .catch(() => {});
   }
 
   const showGuided =
     !!latestRes &&
-    (latestRes.status === "out_of_scope" ||
-      latestRes.intent === "unknown_out_of_scope" ||
-      latestRes.status === "needs_clarification");
+    (latestRes.status === "out_of_scope" || latestRes.intent === "unknown_out_of_scope" || latestRes.status === "needs_clarification");
 
   const traceText =
     latestRes?.meta?.tool_calls?.length
@@ -308,7 +295,9 @@ export default function AIAssistantPage() {
           </header>
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-sm">
-            <label className="block text-sm font-medium text-slate-200">Tell me what you’re trying to do…</label>
+            <label className="block text-sm font-medium text-slate-200">
+              Tell me what you’re trying to do…
+            </label>
 
             <textarea
               className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-600"
@@ -370,15 +359,25 @@ export default function AIAssistantPage() {
                 {traceText ? <span className="text-xs text-slate-400">{traceText}</span> : null}
               </div>
 
-              <Section title="Understanding your situation" body={safeText(latestRes.sections?.understanding)} />
+              <Section
+                title="Understanding your situation"
+                body={safeText(latestRes.sections?.understanding)}
+              />
+
               <SectionList title="Analysis" items={safeArray(latestRes.sections?.analysis)} />
-              <Section title="Recommended next step" body={safeText(latestRes.sections?.recommended_next_step)} />
+
+              <Section
+                title="Recommended next step"
+                body={safeText(latestRes.sections?.recommended_next_step)}
+              />
 
               {showGuided ? (
                 <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
                   <div className="flex flex-col gap-1">
                     <h3 className="text-sm font-semibold text-slate-200">Choose a goal:</h3>
-                    <p className="text-xs text-slate-400">These options add the minimum details needed for a confident route.</p>
+                    <p className="text-xs text-slate-400">
+                      These options add the minimum details needed for a confident route.
+                    </p>
                   </div>
 
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -435,9 +434,14 @@ export default function AIAssistantPage() {
             <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/20 p-5">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold text-slate-200">Last successful result</h2>
-                <span className="text-xs text-slate-500">Shown for reference only (latest result is above).</span>
+                <span className="text-xs text-slate-500">
+                  Shown for reference only (latest result is above).
+                </span>
               </div>
-              <Section title="Understanding" body={safeText(lastOkRes.sections?.understanding)} />
+              <Section
+                title="Understanding"
+                body={safeText(lastOkRes.sections?.understanding)}
+              />
               <SectionList title="Analysis" items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)} />
             </section>
           ) : null}
