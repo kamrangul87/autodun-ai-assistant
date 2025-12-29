@@ -211,45 +211,57 @@ function yearsSince(dateStr?: string): number | null {
 
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
+  const x = s.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
 
-  if (
-    s.includes("suspension") ||
-    s.includes("bush") ||
-    s.includes("arm") ||
-    s.includes("shock") ||
-    s.includes("strut")
-  )
-    return "suspension";
-  if (
-    s.includes("brake") ||
-    s.includes("disc") ||
-    s.includes("pad") ||
-    s.includes("pipe") ||
-    s.includes("hose")
-  )
-    return "brakes";
-  if (s.includes("tyre") || s.includes("tire") || s.includes("tread") || s.includes("sidewall"))
-    return "tyres";
-  if (s.includes("bearing") || s.includes("wheel bearing")) return "wheel_bearing";
-  if (
-    s.includes("corrosion") ||
-    s.includes("rust") ||
-    s.includes("corroded") ||
-    s.includes("subframe") ||
-    s.includes("chassis")
-  )
+  const has = (...keys: string[]) => keys.some((k) => x.includes(k));
+
+  // Corrosion / structure
+  if (has("corrosion", "corroded", "rust", "rotted", "subframe", "chassis", "structural", "mounting"))
     return "corrosion";
-  if (
-    s.includes("emission") ||
-    s.includes("lambda") ||
-    s.includes("catalyst") ||
-    s.includes("dp") ||
-    s.includes("smoke")
-  )
+
+  // Brakes
+  if (has("brake", "disc", "pad", "caliper", "handbrake", "parking brake", "brake pipe", "brake hose", "abs"))
+    return "brakes";
+
+  // Tyres / wheels
+  if (has("tyre", "tire", "tread", "sidewall", "bulge", "cord", "wheel", "rim", "alloy"))
+    return "tyres";
+
+  // Suspension
+  if (has("suspension", "shock", "strut", "spring", "damper", "wishbone", "control arm", "bush", "ball joint", "drop link"))
+    return "suspension";
+
+  // Steering
+  if (has("steering", "rack", "track rod", "tie rod", "power steering", "column", "joint"))
+    return "steering";
+
+  // Exhaust
+  if (has("exhaust", "silencer", "muffler", "tailpipe", "flexi", "flexible joint"))
+    return "exhaust";
+
+  // Emissions / engine
+  if (has("emission", "smoke", "lambda", "o2 sensor", "catalyst", "dpf", "egr", "engine management", "check engine"))
     return "emissions";
-  if (s.includes("oil") || s.includes("leak") || s.includes("fluid")) return "leaks_fluids";
-  if (s.includes("light") || s.includes("lamp") || s.includes("headlamp") || s.includes("indicator"))
+
+  // Leaks / fluids
+  if (has("oil leak", "leak", "coolant", "brake fluid", "power steering fluid"))
+    return "leaks_fluids";
+
+  // Lights / visibility
+  if (has("light", "lamp", "headlamp", "indicator", "fog", "wiper", "washer", "windscreen", "mirror"))
     return "lights_visibility";
+
+  // Seatbelts / airbags
+  if (has("seat belt", "seatbelt", "pretensioner", "airbag", "srs"))
+    return "seatbelts_srs";
+
+  // Electrical
+  if (has("battery", "alternator", "starter", "wiring", "electrical", "warning lamp", "dashboard warning"))
+    return "electrical";
+
+  // Body / doors / bonnet
+  if (has("door", "bonnet", "boot", "tailgate", "latch", "hinge", "bumper", "panel"))
+    return "body_structure";
 
   return "other";
 }
