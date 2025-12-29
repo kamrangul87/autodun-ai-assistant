@@ -3,7 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 /* =======================
    CANONICAL: MOT Intelligence v3 (Layered)
    Layers 1–7 implemented here.
-   Do not use older v2 agent-run variants.
+   Minimal, surgical edits only.
 ======================= */
 
 /* =======================
@@ -52,12 +52,12 @@ function classifyIntent(text: string): AgentIntent {
     return "unknown_out_of_scope";
   }
 
-  // EV intent
+  // EV intent (intentionally out-of-scope for this canonical MOT endpoint)
   if (["ev", "electric", "charging", "charger", "postcode"].some((k) => t.includes(k))) {
     return "ev_charging_readiness";
   }
 
-  // Used-car intent
+  // Used-car intent (intentionally out-of-scope for this canonical MOT endpoint)
   if (["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) => t.includes(k))) {
     return "used_car_buyer";
   }
@@ -73,6 +73,26 @@ function classifyIntent(text: string): AgentIntent {
 function extractVRM(text: string): string | null {
   const m = (text || "").toUpperCase().match(/\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/);
   return m ? m[1].replace(/\s+/g, "") : null;
+}
+
+// ✅ Added (minimal): age extractor
+function extractAgeYears(text: string): number | null {
+  const m = (text || "").toLowerCase().match(/(\d{1,2})\s*(years|year|yrs|yr)\s*old/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ✅ Added (minimal): mileage extractor
+function extractMileage(text: string): number | null {
+  const t = (text || "").toLowerCase().replace(/,/g, "");
+  const k = t.match(/(\d{2,3})\s*k\s*miles/);
+  if (k) return parseInt(k[1], 10) * 1000;
+
+  const m = t.match(/(\d{4,6})\s*miles/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 /* =======================
@@ -388,7 +408,12 @@ function buildLayer7(input: {
   vrm: string;
   vehicle: { ageYears: number | null; mileage: number | null };
   risk: { score: number; band: RiskBand };
-  readiness: { score: number; label: "READY" | "FAIR" | "POOR" | "NOT READY"; reasons: string[]; improvements: string[] };
+  readiness: {
+    score: number;
+    label: "READY" | "FAIR" | "POOR" | "NOT READY";
+    reasons: string[];
+    improvements: string[];
+  };
   timeline: Array<{ theme: string; priority: "NOW" | "BEFORE NEXT MOT"; reason: string }>;
   cost: { minTotal: number; maxTotal: number; breakdown: Array<{ theme: string; range: string }> };
   ownership: { decision: "KEEP" | "CONSIDER_REPLACING" | "REPLACE"; reasons: string[] };
@@ -442,13 +467,72 @@ function buildLayer7(input: {
   // Extra evidence lines
   const evidence: string[] = [];
   if (input.vehicle.ageYears !== null) evidence.push(`Vehicle age: ~${input.vehicle.ageYears.toFixed(1)} years.`);
-  if (input.vehicle.mileage !== null) evidence.push(`Latest recorded mileage: ${input.vehicle.mileage.toLocaleString()} miles.`);
+  if (input.vehicle.mileage !== null)
+    evidence.push(`Latest recorded mileage: ${input.vehicle.mileage.toLocaleString()} miles.`);
 
   return {
     headline,
     summaryLines: [riskLine, readinessLine, costLine, ...evidence],
     actionLines,
     recommendedNextStep: next,
+  };
+}
+
+/* =======================
+   ✅ Added (minimal): NON-VRM MOT CHECKLIST FALLBACK
+======================= */
+
+function makeMotChecklistFallback(
+  id: string,
+  tool_calls: AgentResponse["meta"]["tool_calls"],
+  age: number | null,
+  miles: number | null
+): AgentResponse {
+  const context: string[] = [];
+  if (age !== null) context.push(`Vehicle age: ${age} years.`);
+  if (miles !== null) context.push(`Mileage: ${miles.toLocaleString()} miles.`);
+
+  const checklist = [
+    "Lights: all bulbs, indicators, brake lights, number plate lights",
+    "Tyres: tread depth, sidewall cracks/bulges, correct pressures",
+    "Brakes: pad/disc wear, brake fluid level, handbrake holds on a hill",
+    "Wipers & washers: blades, washer jets, washer fluid",
+    "Windscreen: chips/cracks in driver’s view",
+    "Warning lights: engine/ABS/airbag lights must be off",
+    "Steering/suspension: knocking sounds, excessive play, uneven tyre wear",
+    "Emissions readiness: service up to date, no smoke, no misfire",
+    "Seatbelts: retract/lock properly, no fraying",
+    "Leaks: oil/coolant/brake fluid leaks under the car",
+  ];
+
+  const focus: string[] = [];
+  if (age !== null && age >= 8) focus.push("Extra focus: suspension bushes/ball joints and corrosion checks.");
+  if (miles !== null && miles >= 60000) focus.push("Extra focus: brakes, tyres, and suspension wear items.");
+
+  return {
+    status: "ok",
+    intent: "mot_preparation",
+    sections: {
+      understanding: "Pre-MOT checklist (no VRM provided).",
+      analysis: [
+        ...(context.length ? context : ["Tip: Share VRM for full MOT Intelligence (Layers 1–7)."]),
+        ...(focus.length ? focus : []),
+        "Checklist:",
+        ...checklist.map((x) => `• ${x}`),
+      ],
+      recommended_next_step:
+        "If you share your VRM, I’ll run full MOT Intelligence (Layers 1–7) with risk, readiness, cost, and ownership decision.",
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["L1_intent", "L2_extract", "L7_fallback_checklist"],
+    },
   };
 }
 
@@ -492,9 +576,9 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
     }
   }
 
-  // Pattern trend logic (minimal hardening, still lightweight):
-  // - worsening if occurrences in last 2 years >= occurrences in earlier years AND last_seen is recent
+  // Pattern trend logic (minimal hardening, lightweight):
   // - improving if not seen for 3+ years
+  // - worsening if last_seen is recent AND recentCount >= max(2, olderCount)
   const currentYear = new Date().getFullYear();
   const patterns = Object.entries(stats).map(([theme, s]) => {
     const recentCount = s.years.filter((y) => y >= currentYear - 1).length; // this year/last year
@@ -643,7 +727,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const vrm = extractVRM(text);
+
+  // ✅ Minimal change: if no VRM but age/mileage exists, return checklist fallback
   if (!vrm) {
+    const age = extractAgeYears(text);
+    const miles = extractMileage(text);
+
+    if (age !== null || miles !== null) {
+      return res.status(200).json(makeMotChecklistFallback(id, tool_calls, age, miles));
+    }
+
     return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
   }
 
@@ -696,7 +789,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       intent,
       sections: {
         understanding: "We could not complete MOT Intelligence.",
-        analysis: ["A temporary error occurred while running the layered engine.", `Debug hint: ${String(e?.message || e || "unknown error")}`],
+        analysis: [
+          "A temporary error occurred while running the layered engine.",
+          `Debug hint: ${String(e?.message || e || "unknown error")}`,
+        ],
         recommended_next_step: "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
       },
       actions: [
