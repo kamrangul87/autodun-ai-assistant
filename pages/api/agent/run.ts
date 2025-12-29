@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getNearbyChargers } from "@/lib/tools/evFinder";
 
 /* =======================
-   Types & Helpers
+   Agent Types
 ======================= */
 
 type AgentStatus = "ok" | "needs_clarification" | "out_of_scope" | "error";
@@ -36,28 +36,13 @@ function requestId() {
 
 function classifyIntent(text: string): AgentIntent {
   const t = text.toLowerCase();
-
-  const hardOOS = [
-    "import","japan","customs","duty","vat","dvla registration","type approval",
-    "shipping","container","auction","copart","insurance quote","finance","loan",
-    "lease","visa","immigration","job","health","bitcoin",
-  ];
-  if (hardOOS.some((k) => t.includes(k))) return "unknown_out_of_scope";
-
-  const mot = [
-    "mot","fail","test","advisory","mileage","emission","brake","tyre",
-    "suspension","warning light","engine light","vrm","registration",
-  ];
-  const ev = ["ev","electric","charge","charging","charger","postcode"];
-  const used = ["buy","used car","service history","v5","hpi","cat"];
-
-  const score = (arr: string[]) => arr.filter((k) => t.includes(k)).length;
-  const motScore = score(mot), evScore = score(ev), usedScore = score(used);
-
-  if (!motScore && !evScore && !usedScore) return "unknown_out_of_scope";
-  if (motScore >= evScore && motScore >= usedScore) return "mot_preparation";
-  if (evScore >= motScore && evScore >= usedScore) return "ev_charging_readiness";
-  return "used_car_buyer";
+  if (["visa","job","health","bitcoin"].some((k) => t.includes(k)))
+    return "unknown_out_of_scope";
+  if (["ev","charging","postcode"].some((k) => t.includes(k)))
+    return "ev_charging_readiness";
+  if (["buy","used","v5","hpi"].some((k) => t.includes(k)))
+    return "used_car_buyer";
+  return "mot_preparation";
 }
 
 /* =======================
@@ -70,28 +55,22 @@ function extractVRM(text: string): string | null {
 }
 
 /* =======================
-   MOT Intelligence
+   MOT Types
 ======================= */
 
-type MotDefect = { dangerous?: boolean; text?: string; type?: string };
+type MotDefect = { text?: string; type?: string };
 type MotTest = {
   completedDate?: string;
-  expiryDate?: string;
   testResult?: string;
   odometerValue?: string;
   defects?: MotDefect[];
 };
 type MotHistory = {
-  make?: string;
-  model?: string;
-  fuelType?: string;
-  primaryColour?: string;
   firstUsedDate?: string;
   registrationDate?: string;
   motTests?: MotTest[];
 };
 
-/* 🔹 NEW: Pattern tracking type */
 type ThemeYearStat = {
   first_seen: number;
   last_seen: number;
@@ -99,28 +78,37 @@ type ThemeYearStat = {
   years: number[];
 };
 
-const MOT_HISTORY_API_URL =
-  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+type FixDecision = {
+  theme: string;
+  decision: "FIX" | "MONITOR";
+  confidence: "HIGH" | "MEDIUM";
+  reason: string;
+};
 
-function yearsSince(dateStr?: string): number | null {
-  if (!dateStr) return null;
-  const d = new Date(dateStr);
-  return Number.isNaN(d.getTime())
+type RiskBand = "LOW" | "MEDIUM" | "HIGH";
+
+/* =======================
+   Utilities
+======================= */
+
+function yearsSince(d?: string): number | null {
+  if (!d) return null;
+  const dt = new Date(d);
+  return Number.isNaN(dt.getTime())
     ? null
-    : (Date.now() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
+    : (Date.now() - dt.getTime()) / (365.25 * 24 * 3600 * 1000);
 }
 
 /* =======================
-   Theme Classifier (as-is)
+   Theme Classifier
 ======================= */
 
 function themeFromText(t: string): string {
   const s = (t || "").toLowerCase();
   const has = (...k: string[]) => k.some((x) => s.includes(x));
-
-  if (has("tyre","tread","sidewall")) return "tyres";
-  if (has("suspension","bush","shock","arm")) return "suspension";
-  if (has("brake","disc","pad","pipe")) return "brakes";
+  if (has("tyre","tread")) return "tyres";
+  if (has("suspension","bush","shock")) return "suspension";
+  if (has("brake","disc","pad")) return "brakes";
   if (has("exhaust","silencer","flexi")) return "exhaust";
   if (has("corrosion","rust","subframe")) return "corrosion";
   if (has("emission","lambda","dpf")) return "emissions";
@@ -131,7 +119,6 @@ function themeFromText(t: string): string {
    Risk Scoring
 ======================= */
 
-type RiskBand = "LOW" | "MEDIUM" | "HIGH";
 function scoreMotRisk(input: {
   ageYears?: number | null;
   mileage?: number | null;
@@ -148,17 +135,54 @@ function scoreMotRisk(input: {
 }
 
 /* =======================
-   MOT Intelligence v2 + Pattern Engine
+   FIX vs IGNORE ENGINE (Layer-2)
 ======================= */
 
+function decideFixOrIgnore(
+  patterns: Array<{
+    theme: string;
+    repeat_count: number;
+    last_seen_year: number;
+    trend: "worsening" | "stable" | "improving";
+  }>
+): FixDecision[] {
+  const currentYear = new Date().getFullYear();
+
+  return patterns.map((p) => {
+    const recent = p.last_seen_year >= currentYear - 1;
+    const repeated = p.repeat_count >= 3;
+    const worsening = p.trend === "worsening";
+
+    if (recent && repeated && worsening) {
+      return {
+        theme: p.theme,
+        decision: "FIX",
+        confidence: "HIGH",
+        reason: "Repeated defects in recent MOTs with a worsening pattern",
+      };
+    }
+
+    return {
+      theme: p.theme,
+      decision: "MONITOR",
+      confidence: repeated ? "MEDIUM" : "HIGH",
+      reason: "No strong evidence of worsening defects in recent MOTs",
+    };
+  });
+}
+
+/* =======================
+   MOT Intelligence v2 + v3
+======================= */
+
+const MOT_HISTORY_API_URL =
+  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
 async function tool_get_mot_intelligence_v2(vrm: string) {
-  const url = new URL(MOT_HISTORY_API_URL);
-  url.searchParams.set("vrm", vrm);
-
-  const r = await fetch(url.toString());
+  const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${vrm}`);
   if (!r.ok) throw new Error("MOT fetch failed");
-  const data = (await r.json()) as MotHistory;
 
+  const data = (await r.json()) as MotHistory;
   const tests = data.motTests || [];
   const latest = tests[0] || {};
 
@@ -191,7 +215,6 @@ async function tool_get_mot_intelligence_v2(vrm: string) {
     }
   }
 
-  /* 🔹 NEW: pattern analysis */
   const patterns = Object.entries(themeYearStats).map(([theme, s]) => {
     let trend: "worsening" | "stable" | "improving" = "stable";
     if (s.years.filter((y) => y >= new Date().getFullYear() - 1).length >= 2)
@@ -207,6 +230,8 @@ async function tool_get_mot_intelligence_v2(vrm: string) {
     };
   });
 
+  const decisions = decideFixOrIgnore(patterns);
+
   const risk = scoreMotRisk({
     ageYears,
     mileage: Number(latest.odometerValue),
@@ -214,16 +239,7 @@ async function tool_get_mot_intelligence_v2(vrm: string) {
     repeatThemes: themeCounts,
   });
 
-  return {
-    vrm,
-    latest,
-    topThemes: Object.entries(themeCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([theme, count]) => ({ theme, count })),
-    patterns,
-    risk,
-  };
+  return { vrm, patterns, decisions, risk };
 }
 
 /* =======================
@@ -250,16 +266,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       sections: {
         understanding: `MOT intelligence for ${vrm}.`,
         analysis: [
-          ...intel.patterns
-            .filter((p) => p.repeat_count >= 3)
+          "Fix vs Monitor assessment:",
+          ...intel.decisions
+            .filter((d) => d.decision === "FIX")
             .map(
-              (p) =>
-                `Pattern: ${p.theme} recurring since ${p.first_seen_year} (${p.trend}).`
+              (d) =>
+                `FIX NOW: ${d.theme} — ${d.reason} (confidence: ${d.confidence}).`
+            ),
+          ...intel.decisions
+            .filter((d) => d.decision === "MONITOR")
+            .slice(0, 2)
+            .map(
+              (d) =>
+                `Monitor: ${d.theme} — ${d.reason}.`
             ),
           `Risk score: ${intel.risk.score}/100 (${intel.risk.band})`,
         ],
         recommended_next_step:
-          "Fix worsening patterns before the next MOT test.",
+          "Fix worsening items before the next MOT to reduce failure risk.",
       },
       actions: [{ label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" }],
       meta: { request_id: id, tool_calls },
