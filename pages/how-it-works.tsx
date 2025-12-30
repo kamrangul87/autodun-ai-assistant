@@ -11,24 +11,23 @@ export default function HowItWorksPage() {
         />
       </Head>
 
-      <main className="max-w-4xl mx-auto px-6 py-16 text-slate-200">
-        <h1 className="text-4xl font-bold mb-6">
+      <main className="max-w-4xl mx-auto px-6 py-16">
+        <h1 className="text-4xl font-bold text-slate-900 mb-6">
           How Autodun AI Works
         </h1>
 
-        <p className="text-lg text-slate-400 mb-10">
+        <p className="text-lg text-slate-700 mb-10">
           Autodun AI is a decision-focused automotive intelligence system.
           It does not behave like a generic chatbot. Instead, it routes
           each question into a specialised workflow and produces structured,
           explainable recommendations.
         </p>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             What problem Autodun AI solves
           </h2>
-          <ul className="list-disc list-inside space-y-2 text-slate-300">
+          <ul className="list-disc list-inside space-y-2 text-slate-700">
             <li>Understanding MOT risk and readiness before booking a test</li>
             <li>Interpreting confusing MOT history and repeated advisories</li>
             <li>Estimating likely repair exposure on older vehicles</li>
@@ -37,28 +36,26 @@ export default function HowItWorksPage() {
           </ul>
         </section>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             Intent-based routing (not generic chat)
           </h2>
-          <p className="text-slate-300 mb-4">
+          <p className="text-slate-700 mb-4">
             When a user submits a query, Autodun AI first classifies the intent.
             Each intent triggers a dedicated analysis path.
           </p>
-          <ul className="list-disc list-inside space-y-2 text-slate-300">
-            <li><strong>MOT Intelligence</strong> — risk, readiness, and repair planning</li>
+          <ul className="list-disc list-inside space-y-2 text-slate-700">
+            <li><strong>MOT Intelligence</strong> — risk, readiness, repair planning</li>
             <li><strong>EV Charging Readiness</strong> — nearby chargers by postcode</li>
             <li><strong>Used-Car Buying</strong> — inspection guidance and MOT pattern checks</li>
           </ul>
         </section>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             MOT Intelligence — Layered decision model
           </h2>
-          <ol className="list-decimal list-inside space-y-2 text-slate-300">
+          <ol className="list-decimal list-inside space-y-2 text-slate-700">
             <li>Vehicle context (age and mileage)</li>
             <li>MOT history pattern detection</li>
             <li>Severity and safety weighting</li>
@@ -69,24 +66,22 @@ export default function HowItWorksPage() {
           </ol>
         </section>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             Explainable scoring (no black box)
           </h2>
-          <p className="text-slate-300">
+          <p className="text-slate-700">
             Autodun AI uses deterministic rules and conservative thresholds.
-            Every output includes an explanation, such as risk level,
+            Every output includes an explanation such as risk level,
             readiness score, cost range, and recommended actions.
           </p>
         </section>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             Safety and limitations
           </h2>
-          <p className="text-slate-300">
+          <p className="text-slate-700">
             Autodun AI provides decision support only. It does not replace
             professional inspections, certified MOT testing, or legal advice.
             When critical data is missing, the system requests clarification
@@ -94,19 +89,18 @@ export default function HowItWorksPage() {
           </p>
         </section>
 
-        {/* SECTION */}
         <section className="mb-12">
-          <h2 className="text-2xl font-semibold mb-4">
+          <h2 className="text-2xl font-semibold text-slate-900 mb-4">
             Versioning and stability
           </h2>
-          <p className="text-slate-300">
+          <p className="text-slate-700">
             This page documents Autodun AI Assistant v1 — a frozen,
             production-ready baseline. Future versions may extend
             capabilities while preserving explainability and consistency.
           </p>
         </section>
 
-        <hr className="border-slate-700 my-12" />
+        <hr className="border-slate-300 my-12" />
 
         <p className="text-sm text-slate-500">
           Autodun AI is designed to help drivers make safer, clearer,
