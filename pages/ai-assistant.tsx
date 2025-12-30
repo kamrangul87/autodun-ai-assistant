@@ -80,7 +80,9 @@ function Icon({
     | "copy"
     | "external"
     | "spark"
-    | "id";
+    | "id"
+    | "lock"
+    | "star";
   className?: string;
 }) {
   const common = { className, fill: "none", stroke: "currentColor", strokeWidth: 2 };
@@ -169,6 +171,19 @@ function Icon({
           <path d="M17 15h0.01" />
         </svg>
       );
+    case "lock":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <rect x="5" y="11" width="14" height="10" rx="2" />
+          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+        </svg>
+      );
+    case "star":
+      return (
+        <svg viewBox="0 0 24 24" {...common}>
+          <path d="M12 2l3 7 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1 3-7z" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -238,6 +253,75 @@ function IntentChip({ intent }: { intent: AgentIntent }) {
   const meta = intentMeta(intent);
   return (
     <Badge icon={<Icon name={meta.icon} className="h-4 w-4" />}>{meta.label}</Badge>
+  );
+}
+
+/* =======================
+   Monetisation UI (minimal)
+======================= */
+
+function MonetisationCard() {
+  return (
+    <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/30 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-800 bg-slate-950/40 text-slate-200">
+            <Icon name="lock" className="h-5 w-5" />
+          </span>
+
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold text-slate-100">
+                Unlock Pro Insights (coming soon)
+              </p>
+              <span className="inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-950/40 px-2 py-0.5 text-[11px] text-slate-300">
+                <Icon name="star" className="h-3.5 w-3.5" />
+                Pro
+              </span>
+            </div>
+
+            <p className="mt-1 text-xs text-slate-400">
+              Commercial roadmap (no payments enabled in v1). This helps demonstrate product
+              strategy and future scalability.
+            </p>
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                <div className="text-xs font-semibold text-slate-200">Free (today)</div>
+                <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                  <li>• One-time structured guidance</li>
+                  <li>• Routing to MOT / EV / Used workflows</li>
+                  <li>• Copyable report output</li>
+                </ul>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+                <div className="text-xs font-semibold text-slate-200">Pro (planned)</div>
+                <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                  <li>• Full MOT trend analysis</li>
+                  <li>• Cost forecasting bands</li>
+                  <li>• Saved vehicles + reminders</li>
+                </ul>
+              </div>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-400">
+              B2B: Bulk access & analytics planned for councils and dealerships.
+            </p>
+          </div>
+        </div>
+
+        <div className="sm:pt-1">
+          <a
+            href="/pricing"
+            className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950"
+          >
+            View Pro features
+            <Icon name="external" className="h-4 w-4" />
+          </a>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -448,6 +532,15 @@ export default function AIAssistantPage() {
                   Request: {latestRes.meta.request_id}
                 </span>
               ) : null}
+
+              <a
+                href="/pricing"
+                className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/20 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+                title="View pricing (coming soon)"
+              >
+                <Icon name="lock" className="h-4 w-4" />
+                Pro (coming soon)
+              </a>
             </div>
 
             <p className="mt-2 text-slate-300">
@@ -633,6 +726,9 @@ export default function AIAssistantPage() {
                   </div>
                 </div>
               ) : null}
+
+              {/* ✅ Monetisation Layer (UI-only, non-blocking) */}
+              <MonetisationCard />
 
               <div className="mt-6 border-t border-slate-800 pt-4 text-xs text-slate-400">
                 Informational guidance only. Final MOT decisions are made by authorised MOT testing
