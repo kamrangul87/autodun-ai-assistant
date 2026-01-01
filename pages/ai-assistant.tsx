@@ -343,6 +343,9 @@ export default function AIAssistantPage() {
   const abortRef = useRef<AbortController | null>(null);
   const reqSeqRef = useRef(0);
 
+  // ✅ NEW: Prevent auto-run from firing twice (StrictMode / re-renders)
+  const deepLinkRanRef = useRef(false);
+
   const canRun = useMemo(() => text.trim().length >= 3 && !loading, [text, loading]);
 
   useEffect(() => {
@@ -350,6 +353,33 @@ export default function AIAssistantPage() {
       // cleanup on unmount
       abortRef.current?.abort();
     };
+  }, []);
+
+  // ✅ NEW: Deep-link support for /ai-assistant?intent=mot&vrm=...
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (deepLinkRanRef.current) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const intent = (params.get("intent") || "").toLowerCase();
+    const vrmRaw = params.get("vrm") || params.get("plate") || "";
+    const vrm = vrmRaw.trim().replace(/\s+/g, "").toUpperCase();
+
+    // Only override on explicit MOT intent
+    if (intent === "mot") {
+      deepLinkRanRef.current = true;
+
+      // Prefer a very clear MOT prompt so the router never "sticks" on EV
+      const prompt = vrm ? `MOT intelligence for ${vrm}` : "MOT help";
+
+      // Set UI prompt + run automatically
+      setText(prompt);
+
+      // Run after state update is applied
+      setTimeout(() => {
+        runAgent(prompt);
+      }, 50);
+    }
   }, []);
 
   async function runAgent(overrideText?: string) {
