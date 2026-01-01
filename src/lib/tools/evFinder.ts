@@ -1,5 +1,5 @@
 // src/lib/tools/evFinder.ts
-// Minimal, surgical fix: remove invalid type predicate and use a correct “has distance” narrowing.
+// Minimal, surgical fix: correct TS narrowing + keep legacy export name `getNearbyChargers`.
 // Does NOT touch MOT.
 
 export type Station = {
@@ -124,7 +124,8 @@ function normalizeStations(raw: any): Station[] {
 }
 
 // ✅ Correct narrowing: “Station with required distance_miles”
-type StationWithDistance = Station & { distance_miles: number };
+export type StationWithDistance = Station & { distance_miles: number };
+
 function hasDistance(s: Station | null): s is StationWithDistance {
   return !!s && typeof s.distance_miles === "number";
 }
@@ -149,16 +150,29 @@ export async function getStationsNearPostcode(opts: {
   const raw = await r.json();
   const stations = normalizeStations(raw);
 
-  // Compute distance
   const withDistance: Array<Station | null> = stations.map((s) => {
     const d = haversineMiles({ lat: geo.lat, lng: geo.lng }, { lat: s.lat, lng: s.lng });
     return { ...s, distance_miles: d };
   });
 
-  // ✅ FIX: use proper narrowing helper (no invalid predicate)
   return withDistance
     .filter(hasDistance)
     .filter((s) => s.distance_miles <= radiusMiles)
     .sort((a, b) => a.distance_miles - b.distance_miles)
     .slice(0, limit);
+}
+
+/* =========================================================
+   ✅ BACKWARD-COMPAT EXPORT (what your ev.ts expects)
+   pages/api/agent/ev.ts imports: getNearbyChargers
+   Keep signature flexible and map to the new function.
+========================================================= */
+
+export async function getNearbyChargers(opts: {
+  postcode: string;
+  radiusMiles?: number;
+  limit?: number;
+  stationsUrl?: string;
+}) {
+  return getStationsNearPostcode(opts);
 }
