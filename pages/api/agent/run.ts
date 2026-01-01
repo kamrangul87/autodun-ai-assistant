@@ -48,17 +48,29 @@ function classifyIntent(text: string): AgentIntent {
   const t = (text || "").toLowerCase();
 
   // Explicit OOS
-  if (["visa", "job", "health", "bitcoin", "immigration", "loan", "finance"].some((k) => t.includes(k))) {
+  if (
+    ["visa", "job", "health", "bitcoin", "immigration", "loan", "finance"].some((k) =>
+      t.includes(k)
+    )
+  ) {
     return "unknown_out_of_scope";
   }
 
-  // EV intent (intentionally out-of-scope for this canonical MOT endpoint)
-  if (["ev", "electric", "charging", "charger", "postcode"].some((k) => t.includes(k))) {
+  // ✅ EV intent (now real detection, not only "postcode")
+  const hasPostcode = /\b([a-z]{1,2}\d[a-z\d]?\s*\d[a-z]{2})\b/i.test(text || "");
+  const evKeywords = /(charger|charging|ev|station|type\s*2|ccs|chademo|rapid|fast\s*charge)/i.test(
+    text || ""
+  );
+  if (evKeywords || hasPostcode) {
     return "ev_charging_readiness";
   }
 
   // Used-car intent (intentionally out-of-scope for this canonical MOT endpoint)
-  if (["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) => t.includes(k))) {
+  if (
+    ["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) =>
+      t.includes(k)
+    )
+  ) {
     return "used_car_buyer";
   }
 
@@ -93,6 +105,77 @@ function extractMileage(text: string): number | null {
   if (!m) return null;
   const n = parseInt(m[1], 10);
   return Number.isFinite(n) ? n : null;
+}
+
+// ✅ NEW: postcode extractor (EV workflow)
+function extractPostcode(text: string): string | null {
+  const m = (text || "").toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/);
+  return m ? m[1].replace(/\s+/g, " ").trim() : null;
+}
+
+/* =======================
+   EV Helpers (minimal)
+======================= */
+
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+async function geocodeUKPostcode(postcode: string) {
+  const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`;
+  const r = await fetch(url, { method: "GET" });
+  const j = await r.json().catch(() => null);
+
+  if (!r.ok || !j?.result?.latitude || !j?.result?.longitude) {
+    const msg = j?.error || `Postcode lookup failed (${r.status})`;
+    throw new Error(msg);
+  }
+
+  return { lat: Number(j.result.latitude), lng: Number(j.result.longitude) };
+}
+
+type StationLike = {
+  id?: string;
+  name?: string;
+  address?: string;
+  postcode?: string;
+  lat?: number;
+  lng?: number;
+  location?: { lat?: number; lng?: number };
+  connectors?: Array<{ type?: string; power_kw?: number; power?: number; count?: number }>;
+};
+
+function stationLatLng(s: StationLike): { lat: number; lng: number } | null {
+  const lat =
+    typeof s.lat === "number" ? s.lat : typeof s.location?.lat === "number" ? s.location.lat : null;
+  const lng =
+    typeof s.lng === "number" ? s.lng : typeof s.location?.lng === "number" ? s.location.lng : null;
+  if (lat == null || lng == null) return null;
+  return { lat, lng };
+}
+
+function connectorSummary(s: StationLike) {
+  const cs = Array.isArray(s.connectors) ? s.connectors : [];
+  if (!cs.length) return "Connectors: unknown";
+
+  const types = Array.from(new Set(cs.map((c) => (c.type || "").trim()).filter(Boolean)));
+  const maxPower = Math.max(
+    ...cs.map((c) => Number(c.power_kw ?? c.power ?? 0)).filter((n) => Number.isFinite(n))
+  );
+
+  const t = types.length ? types.join(", ") : "Unknown";
+  const p = maxPower > 0 ? ` (up to ${Math.round(maxPower)}kW)` : "";
+  return `Connectors: ${t}${p}`;
 }
 
 /* =======================
@@ -167,8 +250,21 @@ function themeFromText(t: string): string {
   const has = (...k: string[]) => k.some((x) => s.includes(x));
 
   if (has("tyre", "tread", "sidewall", "bulge", "cord")) return "tyres";
-  if (has("suspension", "bush", "shock", "arm", "ball joint", "drop link", "wishbone")) return "suspension";
-  if (has("brake", "disc", "pad", "caliper", "handbrake", "parking brake", "abs", "brake pipe", "brake hose"))
+  if (has("suspension", "bush", "shock", "arm", "ball joint", "drop link", "wishbone"))
+    return "suspension";
+  if (
+    has(
+      "brake",
+      "disc",
+      "pad",
+      "caliper",
+      "handbrake",
+      "parking brake",
+      "abs",
+      "brake pipe",
+      "brake hose"
+    )
+  )
     return "brakes";
   if (has("exhaust", "silencer", "flexi", "flexible joint", "muffler")) return "exhaust";
   if (has("corrosion", "rust", "subframe", "chassis", "structural", "mounting")) return "corrosion";
@@ -401,7 +497,6 @@ function decideKeepOrReplace(input: {
 
 /* =======================
    LAYER-7: EXECUTIVE SYNTHESIS
-   (Final decision package + next actions)
 ======================= */
 
 function buildLayer7(input: {
@@ -450,7 +545,6 @@ function buildLayer7(input: {
     actionLines.push(`Monitor / plan before next MOT: ${topMonitor.join(", ")}.`);
   }
 
-  // Recommended next step text
   let next =
     "Open MOT Predictor to review the full MOT history and book an inspection focused on the “Fix NOW” systems.";
 
@@ -464,7 +558,6 @@ function buildLayer7(input: {
     next = "Do not attempt an MOT immediately. Fix the “Fix NOW” items, then re-check readiness.";
   }
 
-  // Extra evidence lines
   const evidence: string[] = [];
   if (input.vehicle.ageYears !== null) evidence.push(`Vehicle age: ~${input.vehicle.ageYears.toFixed(1)} years.`);
   if (input.vehicle.mileage !== null)
@@ -479,7 +572,7 @@ function buildLayer7(input: {
 }
 
 /* =======================
-   ✅ Added (minimal): NON-VRM MOT CHECKLIST FALLBACK
+   ✅ NON-VRM MOT CHECKLIST FALLBACK
 ======================= */
 
 function makeMotChecklistFallback(
@@ -537,11 +630,16 @@ function makeMotChecklistFallback(
 }
 
 /* =======================
-   MOT Intelligence v3 (Layers 1–6)
+   MOT Intelligence v3 (Layers 1–7)
 ======================= */
 
 const MOT_INTELLIGENCE_VERSION = "mot_intelligence_v3_layer7";
-const MOT_HISTORY_API_URL = process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+const MOT_HISTORY_API_URL =
+  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+// ✅ EV stations endpoint (AI assistant uses this)
+const EV_FINDER_STATIONS_URL =
+  process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
 
 async function tool_get_mot_intelligence_v3(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${encodeURIComponent(vrm)}`, { method: "GET" });
@@ -576,12 +674,9 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
     }
   }
 
-  // Pattern trend logic (minimal hardening, lightweight):
-  // - improving if not seen for 3+ years
-  // - worsening if last_seen is recent AND recentCount >= max(2, olderCount)
   const currentYear = new Date().getFullYear();
   const patterns = Object.entries(stats).map(([theme, s]) => {
-    const recentCount = s.years.filter((y) => y >= currentYear - 1).length; // this year/last year
+    const recentCount = s.years.filter((y) => y >= currentYear - 1).length;
     const olderCount = s.years.filter((y) => y < currentYear - 1).length;
 
     let trend: "worsening" | "stable" | "improving" = "stable";
@@ -641,6 +736,34 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
   };
 }
 
+// ✅ EV tool: chargers near postcode
+async function tool_get_ev_chargers_near_postcode(postcode: string) {
+  const origin = await geocodeUKPostcode(postcode);
+
+  const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
+  if (!r.ok) throw new Error(`Stations feed failed (${r.status})`);
+
+  const raw = await r.json().catch(() => null);
+  const list: StationLike[] = Array.isArray(raw) ? raw : Array.isArray(raw?.stations) ? raw.stations : [];
+
+  if (!list.length) {
+    return { origin, stations: [] as Array<{ s: StationLike; km: number }>, note: "Stations feed returned empty." };
+  }
+
+  const ranked = list
+    .map((s) => {
+      const ll = stationLatLng(s);
+      if (!ll) return null;
+      const km = haversineKm(origin, ll);
+      return { s, km };
+    })
+    .filter(Boolean) as Array<{ s: StationLike; km: number }>;
+
+  ranked.sort((a, b) => a.km - b.km);
+
+  return { origin, stations: ranked.slice(0, 8) };
+}
+
 /* =======================
    Response Helpers
 ======================= */
@@ -667,7 +790,11 @@ function makeOOS(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): A
   };
 }
 
-function makeNeedsClarification(id: string, intent: AgentIntent, tool_calls: AgentResponse["meta"]["tool_calls"]): AgentResponse {
+function makeNeedsClarification(
+  id: string,
+  intent: AgentIntent,
+  tool_calls: AgentResponse["meta"]["tool_calls"]
+): AgentResponse {
   return {
     status: "needs_clarification",
     intent,
@@ -712,15 +839,124 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const raw = req.body;
-  const text = (typeof raw === "string" ? raw : typeof raw?.text === "string" ? raw.text : "").toString().trim();
+  const text = (typeof raw === "string" ? raw : typeof raw?.text === "string" ? raw.text : "")
+    .toString()
+    .trim();
 
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
-  // Keep this endpoint canonical for MOT intelligence
+  /* =======================
+     ✅ EV SUPPORT (minimal)
+  ======================= */
+
+  if (intent === "ev_charging_readiness") {
+    const postcode = extractPostcode(text);
+
+    if (!postcode) {
+      const out: AgentResponse = {
+        status: "needs_clarification",
+        intent,
+        sections: {
+          understanding: "I can find EV chargers, but I need a UK postcode.",
+          analysis: ["Example: “chargers near SW1A 1AA”", "Tip: paste a postcode like SW1A 1AA."],
+          recommended_next_step: "Send your postcode to list nearby chargers.",
+        },
+        actions: [
+          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["EV_intent", "EV_postcode_needed"],
+        },
+      };
+      return res.status(200).json(out);
+    }
+
+    try {
+      const t0 = Date.now();
+      const ev = await tool_get_ev_chargers_near_postcode(postcode);
+      tool_calls.push({ name: "ev_chargers_near_postcode", ok: true, ms: Date.now() - t0 });
+
+      const items = ev.stations || [];
+      const lines =
+        items.length > 0
+          ? items.map(({ s, km }, idx) => {
+              const name = s.name || "Unknown site";
+              const addr = s.address || s.postcode || "";
+              return `${idx + 1}. ${name}${addr ? " — " + addr : ""} — ${km.toFixed(
+                1
+              )} km — ${connectorSummary(s)}`;
+            })
+          : ["No stations found in the feed for that area."];
+
+      const out: AgentResponse = {
+        status: "ok",
+        intent,
+        sections: {
+          understanding: `EV charging options near ${postcode}.`,
+          analysis: [
+            `Top chargers near ${postcode}:`,
+            ...lines,
+            "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
+          ],
+          recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
+        },
+        actions: [
+          {
+            label: "Open EV Charger Finder",
+            href: `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`,
+            type: "primary",
+          },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["EV_intent", "EV_geocode", "EV_fetch_stations", "EV_rank"],
+        },
+      };
+
+      return res.status(200).json(out);
+    } catch (e: any) {
+      tool_calls.push({ name: "ev_chargers_near_postcode", ok: false, ms: 0 });
+
+      const out: AgentResponse = {
+        status: "error",
+        intent,
+        sections: {
+          understanding: `Could not fetch EV chargers for ${postcode}.`,
+          analysis: [`Debug hint: ${String(e?.message || e || "unknown error")}`],
+          recommended_next_step:
+            "Try another postcode. If it persists, verify EV_FINDER_STATIONS_URL is reachable.",
+        },
+        actions: [
+          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["EV_intent", "EV_error"],
+        },
+      };
+      return res.status(200).json(out);
+    }
+  }
+
+  // Keep used-car out-of-scope for now
   if (intent !== "mot_preparation") {
     return res.status(200).json(makeOOS(id, tool_calls));
   }
+
+  /* =======================
+     ✅ MOT FLOW (unchanged)
+  ======================= */
 
   if (text.length < 2 || text.length > 800) {
     return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
@@ -728,7 +964,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const vrm = extractVRM(text);
 
-  // ✅ Minimal change: if no VRM but age/mileage exists, return checklist fallback
   if (!vrm) {
     const age = extractAgeYears(text);
     const miles = extractMileage(text);
@@ -765,20 +1000,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           "Action plan:",
           ...layer7.actionLines.map((x) => `• ${x}`),
           ...(intel.cost.breakdown.length
-            ? ["Cost breakdown (Fix NOW items):", ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`)]
+            ? [
+                "Cost breakdown (Fix NOW items):",
+                ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`),
+              ]
             : []),
         ],
         recommended_next_step: layer7.recommendedNextStep,
       },
       actions: [
-        { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+        {
+          label: "Open MOT Predictor",
+          href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`,
+          type: "primary",
+        },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: {
         request_id: id,
         tool_calls,
         version: MOT_INTELLIGENCE_VERSION,
-        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+        layers: [
+          "L1_risk_scoring",
+          "L2_fix_monitor",
+          "L3_cost",
+          "L4_readiness",
+          "L5_timeline",
+          "L6_ownership",
+          "L7_synthesis",
+        ],
       },
     };
 
@@ -793,7 +1043,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           "A temporary error occurred while running the layered engine.",
           `Debug hint: ${String(e?.message || e || "unknown error")}`,
         ],
-        recommended_next_step: "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
+        recommended_next_step:
+          "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
       },
       actions: [
         { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
@@ -803,7 +1054,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         request_id: id,
         tool_calls,
         version: MOT_INTELLIGENCE_VERSION,
-        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+        layers: [
+          "L1_risk_scoring",
+          "L2_fix_monitor",
+          "L3_cost",
+          "L4_readiness",
+          "L5_timeline",
+          "L6_ownership",
+          "L7_synthesis",
+        ],
       },
     };
     return res.status(200).json(out);
