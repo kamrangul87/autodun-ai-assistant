@@ -1,92 +1,90 @@
-type EvFinderStation = {
-  id?: string;
-  name?: string;
-  address?: string;
-  lat?: number;
-  lng?: number;
-  distance_miles?: number;
-  connectors?: any;
-  connectorsDetailed?: any;
-  source?: string;
-};
+// src/lib/tools/evFinder.ts
 
-async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: number }> {
-  const pc = postcode.trim();
-  const r = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
-
-  if (!r.ok) throw new Error(`Postcode geocode failed (${r.status})`);
-  const j = await r.json();
-
-  const lat = j?.result?.latitude;
-  const lng = j?.result?.longitude;
-  if (typeof lat !== "number" || typeof lng !== "number") {
-    throw new Error("Postcode geocode returned no coordinates");
-  }
-  return { lat, lng };
-}
-
-function normalizeStationsFromEvFinderResponse(data: any): EvFinderStation[] {
-  // EV Finder normal mode: { items: [...] }
-  if (Array.isArray(data?.items)) return data.items;
-
-  // EV Finder bbox mode: { features: [{ properties, geometry: { coordinates: [lng, lat] } }] }
-  if (Array.isArray(data?.features)) {
-    return data.features
-      .map((f: any) => {
-        const props = f?.properties ?? {};
-        const coords = f?.geometry?.coordinates;
-        const lng = Array.isArray(coords) ? Number(coords[0]) : undefined;
-        const lat = Array.isArray(coords) ? Number(coords[1]) : undefined;
-
-        return {
-          ...props,
-          lat: typeof props?.lat === "number" ? props.lat : Number.isFinite(lat) ? lat : props?.lat,
-          lng: typeof props?.lng === "number" ? props.lng : Number.isFinite(lng) ? lng : props?.lng,
-        } as EvFinderStation;
-      })
-      .filter((s: EvFinderStation) => typeof s.lat === "number" && typeof s.lng === "number");
-  }
-
-  // Other possible shapes (legacy/fallback)
-  if (Array.isArray(data?.stations)) return data.stations;
-  if (Array.isArray(data)) return data;
-
-  return [];
-}
-
-export async function getNearbyChargers(params: {
+type NearbyChargerParams = {
   postcode: string;
   radiusMiles?: number;
   limit?: number;
-}) {
-  const { postcode } = params;
-  const radiusMiles = typeof params.radiusMiles === "number" ? params.radiusMiles : 10;
-  const limit = typeof params.limit === "number" ? params.limit : 20;
+};
 
-  const base = process.env.EV_FINDER_STATIONS_URL;
-  if (!base) throw new Error("Missing EV_FINDER_STATIONS_URL env var");
+type Station = {
+  id: number;
+  lat: number;
+  lng: number;
+  name?: string;
+  address?: string;
+  postcode?: string;
+  connectors?: number;
+  connectorsDetailed?: Array<{ type?: string; powerKW?: number; quantity?: number }>;
+  source?: string;
+  distance_miles?: number;
+};
 
-  // 1) Geocode postcode -> lat/lng
+/* =========================
+   Utils
+========================= */
+
+function toRad(v: number) {
+  return (v * Math.PI) / 180;
+}
+
+function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 3958.8; // Earth radius (miles)
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+/* =========================
+   Geocode postcode
+========================= */
+
+async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: number }> {
+  const r = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`);
+  if (!r.ok) throw new Error("Postcode geocoding failed");
+
+  const j = await r.json();
+  if (!j?.result) throw new Error("Invalid postcode");
+
+  return { lat: j.result.latitude, lng: j.result.longitude };
+}
+
+/* =========================
+   Fetch EV stations
+========================= */
+
+async function fetchAllStations(): Promise<Station[]> {
+  const r = await fetch("https://ev.autodun.com/api/stations");
+  if (!r.ok) throw new Error("EV stations feed failed");
+
+  const j = await r.json();
+  return Array.isArray(j?.items) ? j.items : [];
+}
+
+/* =========================
+   MAIN EXPORT
+========================= */
+
+export async function getNearbyChargers({
+  postcode,
+  radiusMiles = 10,
+  limit = 5,
+}: NearbyChargerParams): Promise<Station[]> {
   const { lat, lng } = await geocodePostcode(postcode);
+  const stations = await fetchAllStations();
 
-  // 2) Call EV Finder /api/stations in normal mode (items)
-  const url = new URL(base);
-  url.searchParams.set("lat", String(lat));
-  url.searchParams.set("lng", String(lng));
-  url.searchParams.set("radius", String(radiusMiles));
-  url.searchParams.set("max", String(Math.max(limit, 50)));
+  const withDistance = stations
+    .map((s) => {
+      if (typeof s.lat !== "number" || typeof s.lng !== "number") return null;
 
-  const r = await fetch(url.toString(), { method: "GET" });
-  if (!r.ok) throw new Error(`EV Finder request failed (${r.status})`);
-
-  const data = await r.json();
-  const stations = normalizeStationsFromEvFinderResponse(data);
-
-  // return only stations with coords
-  return stations
-    .filter((s) => typeof s.lat === "number" && typeof s.lng === "number")
+      const d = haversineMiles(lat, lng, s.lat, s.lng);
+      return { ...s, distance_miles: d };
+    })
+    .filter((s): s is Station => !!s && s.distance_miles! <= radiusMiles)
+    .sort((a, b) => (a.distance_miles! - b.distance_miles!))
     .slice(0, limit);
+
+  return withDistance;
 }
