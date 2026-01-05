@@ -221,15 +221,26 @@ function connectorSummary(s: StationLike) {
   const cs = Array.isArray(s.connectors) ? s.connectors : [];
   if (!cs.length) return "Connectors: unknown";
 
-  const types = Array.from(new Set(cs.map((c) => (c.type || "").trim()).filter((s): s is StationLike => s !== null)));
+  // ✅ types are strings (not StationLike)
+  const types = Array.from(
+    new Set(
+      cs
+        .map((c) => String(c?.type ?? "").trim())
+        .filter((t): t is string => t.length > 0)
+    )
+  );
+
   const maxPower = Math.max(
-    ...cs.map((c) => Number(c.power_kw ?? c.power ?? 0)).filter((n) => Number.isFinite(n))
+    ...cs
+      .map((c) => Number(c?.power_kw ?? c?.power ?? 0))
+      .filter((n): n is number => Number.isFinite(n))
   );
 
   const t = types.length ? types.join(", ") : "Unknown";
   const p = maxPower > 0 ? ` (up to ${Math.round(maxPower)}kW)` : "";
   return `Connectors: ${t}${p}`;
 }
+
 
 
 // ✅ NEW: optional Supabase stations fetch (preferred when env vars are present)
@@ -241,8 +252,6 @@ async function fetchStationsFromSupabase(
     return { ok: false, stations: [], error: "Supabase env not set" };
   }
 
-  // NOTE: adjust table/columns if you rename schema. Defaults assume:
-  // ev_stations(id, name, address, postcode, lat, lng, connectors jsonb)
   const url =
     `${EV_SUPABASE_URL.replace(/\/$/, "")}` +
     `/rest/v1/ev_stations?select=id,name,address,postcode,lat,lng,connectors&limit=${limit}`;
@@ -262,49 +271,52 @@ async function fetchStationsFromSupabase(
       return { ok: false, stations: [], error: `Supabase ${r.status}: ${t.slice(0, 200)}` };
     }
 
-   const rows = (await r.json()) as any[];
+    const rows = (await r.json()) as any[];
 
-const stations: StationLike[] = Array.isArray(rows)
-  ? rows
-      .map((row): StationLike | null => {
-        const lat = Number(row?.lat);
-        const lng = Number(row?.lng);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    const stations: StationLike[] = Array.isArray(rows)
+      ? rows
+          .map((row): StationLike | null => {
+            const lat = Number(row?.lat);
+            const lng = Number(row?.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-        const connectorsRaw = Array.isArray(row?.connectors)
-          ? row.connectors
-          : Array.isArray(row?.connectorsDetailed)
-          ? row.connectorsDetailed
-          : [];
+            const connectorsRaw = Array.isArray(row?.connectors)
+              ? row.connectors
+              : Array.isArray(row?.connectorsDetailed)
+              ? row.connectorsDetailed
+              : [];
 
-        const connectors = Array.isArray(connectorsRaw)
-          ? connectorsRaw.map((c: any) => {
-              const power = Number(c?.power_kw ?? c?.powerKW ?? c?.power);
-              const count = Number(c?.count ?? c?.quantity ?? 1);
+            const connectors = Array.isArray(connectorsRaw)
+              ? connectorsRaw.map((c: any) => {
+                  const power = Number(c?.power_kw ?? c?.powerKW ?? c?.power);
+                  const count = Number(c?.count ?? c?.quantity ?? 1);
 
-              return {
-                type: String(c?.type ?? "").trim(),
-                power_kw: Number.isFinite(power) && power > 0 ? power : undefined,
-                count: Number.isFinite(count) && count > 0 ? count : 1,
-              };
-            })
-          : undefined;
+                  return {
+                    type: String(c?.type ?? "").trim(),
+                    power_kw: Number.isFinite(power) && power > 0 ? power : undefined,
+                    count: Number.isFinite(count) && count > 0 ? count : 1,
+                  };
+                })
+              : undefined;
 
-        return {
-          id: String(row?.id ?? ""),
-          name: String(row?.name ?? "Charging location"),
-          address: String(row?.address ?? ""),
-          postcode: String(row?.postcode ?? ""),
-          lat,
-          lng,
-          connectors,
-        };
-      })
-      // ✅ TS-safe narrowing (removes nulls)
-      .filter((s): s is StationLike => s !== null)
-  : [];
+            return {
+              id: String(row?.id ?? ""),
+              name: String(row?.name ?? "Charging location"),
+              address: String(row?.address ?? ""),
+              postcode: String(row?.postcode ?? ""),
+              lat,
+              lng,
+              connectors,
+            };
+          })
+          .filter((s): s is StationLike => s !== null)
+      : [];
 
-return { ok: true, stations };
+    return { ok: true, stations };
+  } catch (e: any) {
+    return { ok: false, stations: [], error: String(e?.message || e || "unknown error") };
+  }
+}
 
 /* =======================
    MOT Types
@@ -1123,11 +1135,12 @@ async function tool_get_ev_chargers_near_postcode(
       analysis: [
         "Top chargers near your postcode:",
         ...nearby.map((x, i) => {
-          const cs = (x.s.connectors || [])
-            .slice(0, 2)
-            .map((c) => c.type)
-            .filter((s): s is StationLike => s !== null)
-            .join(", ");
+         const cs = (x.s.connectors || [])
+    .slice(0, 2)
+   .map((c) => String(c?.type ?? "").trim())
+   .filter((t): t is string => t.length > 0)
+    .join(", ");
+
           const tail = cs ? ` — ${cs}` : "";
           const where = x.s.address || x.s.postcode || "";
           return `${i + 1}. ${x.s.name} — ${where}${tail} (~${x.d.toFixed(1)} km)`;
