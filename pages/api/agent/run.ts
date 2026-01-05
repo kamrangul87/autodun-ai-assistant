@@ -221,7 +221,7 @@ function connectorSummary(s: StationLike) {
   const cs = Array.isArray(s.connectors) ? s.connectors : [];
   if (!cs.length) return "Connectors: unknown";
 
-  const types = Array.from(new Set(cs.map((c) => (c.type || "").trim()).filter(Boolean)));
+  const types = Array.from(new Set(cs.map((c) => (c.type || "").trim()).filter((s): s is StationLike => s !== null)));
   const maxPower = Math.max(
     ...cs.map((c) => Number(c.power_kw ?? c.power ?? 0)).filter((n) => Number.isFinite(n))
   );
@@ -262,37 +262,44 @@ async function fetchStationsFromSupabase(
       return { ok: false, stations: [], error: `Supabase ${r.status}: ${t.slice(0, 200)}` };
     }
 
-   
-        const stations: StationLike[] = Array.isArray(rows)
-  ? rows
-      .map((row): StationLike | null => {
-        const lat = Number(row?.lat);
-        const lng = Number(row?.lng);
+    const rows = (await r.json()) as any[];
+    const stations: StationLike[] = Array.isArray(rows)
+      ? rows
+          .map((row) => {
+            const lat = Number(row?.lat);
+            const lng = Number(row?.lng);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-        // If your DB uses `lon` instead of `lng`, use this instead:
-        // const lng = Number(row?.lng ?? row?.lon);
+            const connectors = Array.isArray(row?.connectors)
+              ? row.connectors
+              : Array.isArray(row?.connectorsDetailed)
+              ? row.connectorsDetailed
+              : null;
 
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            return {
+              id: String(row?.id ?? ""),
+              name: String(row?.name ?? "Charging location"),
+              address: String(row?.address ?? ""),
+              postcode: String(row?.postcode ?? ""),
+              lat,
+              lng,
+              connectors: Array.isArray(connectors)
+                ? connectors.map((c: any) => ({
+                    type: String(c?.type || ""),
+                    power_kw: Number(c?.power_kw ?? c?.powerKW ?? c?.power ?? 0) || undefined,
+                    count: Number(c?.count ?? c?.quantity ?? 1) || 1,
+                  }))
+                : undefined,
+            } as StationLike;
+          })
+          .filter((s): s is StationLike => s !== null)
+      : [];
 
-        const connectors = Array.isArray(row?.connectors)
-          ? row.connectors
-          : Array.isArray(row?.connectorsDetailed)
-          ? row.connectorsDetailed
-          : null;
-
-        return {
-          id: String(row?.id ?? ""),
-          name: String(row?.name ?? "Charging location"),
-          address: String(row?.address ?? ""),
-          postcode: String(row?.postcode ?? ""),
-          lat,
-          lng,
-          connectors,
-        };
-      })
-      .filter((s): s is StationLike => s !== null)
-  : [];
-
+    return { ok: true, stations };
+  } catch (e: any) {
+    return { ok: false, stations: [], error: String(e?.message || e || "unknown error") };
+  }
+}
 
 /* =======================
    MOT Types
@@ -1039,7 +1046,7 @@ async function tool_get_ev_chargers_near_postcode(
         lng: lng as number,
       } as StationLike;
     })
-    .filter(Boolean) as StationLike[];
+    .filter((s): s is StationLike => s !== null) as StationLike[];
 
   if (!stations.length) {
     return {
@@ -1065,7 +1072,7 @@ async function tool_get_ev_chargers_near_postcode(
       const d = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
       return { s, d };
     })
-    .filter(Boolean) as Array<{ s: StationLike; d: number }>;
+    .filter((s): s is StationLike => s !== null) as Array<{ s: StationLike; d: number }>;
 
   const nearby = scored
     .filter((x) => x.d <= 10)
@@ -1114,7 +1121,7 @@ async function tool_get_ev_chargers_near_postcode(
           const cs = (x.s.connectors || [])
             .slice(0, 2)
             .map((c) => c.type)
-            .filter(Boolean)
+            .filter((s): s is StationLike => s !== null)
             .join(", ");
           const tail = cs ? ` — ${cs}` : "";
           const where = x.s.address || x.s.postcode || "";
@@ -1188,7 +1195,7 @@ function makeNeedsClarification(
    Handler
 ======================= */
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   const id = requestId();
 
   if (req.method !== "POST") {
@@ -1366,3 +1373,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json(out);
   }
 }
+
+export default handler;
