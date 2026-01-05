@@ -262,15 +262,16 @@ async function fetchStationsFromSupabase(
       return { ok: false, stations: [], error: `Supabase ${r.status}: ${t.slice(0, 200)}` };
     }
 
-   const rows = (await r.json()) as any[];
-
-const stations: StationLike[] = Array.isArray(rows)
+   
+        const stations: StationLike[] = Array.isArray(rows)
   ? rows
-      .map((row) => {
+      .map((row): StationLike | null => {
         const lat = Number(row?.lat);
         const lng = Number(row?.lng);
 
-        // If invalid lat/lng, return null (filtered out below)
+        // If your DB uses `lon` instead of `lng`, use this instead:
+        // const lng = Number(row?.lng ?? row?.lon);
+
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
         const connectors = Array.isArray(row?.connectors)
@@ -286,11 +287,10 @@ const stations: StationLike[] = Array.isArray(rows)
           postcode: String(row?.postcode ?? ""),
           lat,
           lng,
-          connectors: Array.isArray(connectors) ? connectors : [],
-        } as StationLike;
+          connectors,
+        };
       })
-      // ✅ THIS is the key line: it removes nulls AND fixes the TypeScript type
-      .filter((x): x is StationLike => x !== null)
+      .filter((s): s is StationLike => s !== null)
   : [];
 
 
