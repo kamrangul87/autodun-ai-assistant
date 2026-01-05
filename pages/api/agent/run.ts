@@ -262,44 +262,49 @@ async function fetchStationsFromSupabase(
       return { ok: false, stations: [], error: `Supabase ${r.status}: ${t.slice(0, 200)}` };
     }
 
-    const rows = (await r.json()) as any[];
-    const stations: StationLike[] = Array.isArray(rows)
-      ? rows
-          .map((row) => {
-            const lat = Number(row?.lat);
-            const lng = Number(row?.lng);
-            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+   const rows = (await r.json()) as any[];
 
-            const connectors = Array.isArray(row?.connectors)
-              ? row.connectors
-              : Array.isArray(row?.connectorsDetailed)
-              ? row.connectorsDetailed
-              : null;
+const stations: StationLike[] = Array.isArray(rows)
+  ? rows
+      .map((row): StationLike | null => {
+        const lat = Number(row?.lat);
+        const lng = Number(row?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-            return {
-              id: String(row?.id ?? ""),
-              name: String(row?.name ?? "Charging location"),
-              address: String(row?.address ?? ""),
-              postcode: String(row?.postcode ?? ""),
-              lat,
-              lng,
-              connectors: Array.isArray(connectors)
-                ? connectors.map((c: any) => ({
-                    type: String(c?.type || ""),
-                    power_kw: Number(c?.power_kw ?? c?.powerKW ?? c?.power ?? 0) || undefined,
-                    count: Number(c?.count ?? c?.quantity ?? 1) || 1,
-                  }))
-                : undefined,
-            } as StationLike;
-          })
-          .filter((s): s is StationLike => s !== null)
-      : [];
+        const connectorsRaw = Array.isArray(row?.connectors)
+          ? row.connectors
+          : Array.isArray(row?.connectorsDetailed)
+          ? row.connectorsDetailed
+          : [];
 
-    return { ok: true, stations };
-  } catch (e: any) {
-    return { ok: false, stations: [], error: String(e?.message || e || "unknown error") };
-  }
-}
+        const connectors = Array.isArray(connectorsRaw)
+          ? connectorsRaw.map((c: any) => {
+              const power = Number(c?.power_kw ?? c?.powerKW ?? c?.power);
+              const count = Number(c?.count ?? c?.quantity ?? 1);
+
+              return {
+                type: String(c?.type ?? "").trim(),
+                power_kw: Number.isFinite(power) && power > 0 ? power : undefined,
+                count: Number.isFinite(count) && count > 0 ? count : 1,
+              };
+            })
+          : undefined;
+
+        return {
+          id: String(row?.id ?? ""),
+          name: String(row?.name ?? "Charging location"),
+          address: String(row?.address ?? ""),
+          postcode: String(row?.postcode ?? ""),
+          lat,
+          lng,
+          connectors,
+        };
+      })
+      // ✅ TS-safe narrowing (removes nulls)
+      .filter((s): s is StationLike => s !== null)
+  : [];
+
+return { ok: true, stations };
 
 /* =======================
    MOT Types
