@@ -262,44 +262,37 @@ async function fetchStationsFromSupabase(
       return { ok: false, stations: [], error: `Supabase ${r.status}: ${t.slice(0, 200)}` };
     }
 
-    const rows = (await r.json()) as any[];
-    const stations: StationLike[] = Array.isArray(rows)
-      ? rows
-          .map((row) => {
-            const lat = Number(row?.lat);
-            const lng = Number(row?.lng);
-            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+   const rows = (await r.json()) as any[];
 
-            const connectors = Array.isArray(row?.connectors)
-              ? row.connectors
-              : Array.isArray(row?.connectorsDetailed)
-              ? row.connectorsDetailed
-              : null;
+const stations: StationLike[] = Array.isArray(rows)
+  ? rows
+      .map((row) => {
+        const lat = Number(row?.lat);
+        const lng = Number(row?.lng);
 
-            return {
-              id: String(row?.id ?? ""),
-              name: String(row?.name ?? "Charging location"),
-              address: String(row?.address ?? ""),
-              postcode: String(row?.postcode ?? ""),
-              lat,
-              lng,
-              connectors: Array.isArray(connectors)
-                ? connectors.map((c: any) => ({
-                    type: String(c?.type || ""),
-                    power_kw: Number(c?.power_kw ?? c?.powerKW ?? c?.power ?? 0) || undefined,
-                    count: Number(c?.count ?? c?.quantity ?? 1) || 1,
-                  }))
-                : undefined,
-            } as StationLike;
-          })
-          .filter(Boolean)
-      : [];
+        // If invalid lat/lng, return null (filtered out below)
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
-    return { ok: true, stations };
-  } catch (e: any) {
-    return { ok: false, stations: [], error: String(e?.message || e || "unknown error") };
-  }
-}
+        const connectors = Array.isArray(row?.connectors)
+          ? row.connectors
+          : Array.isArray(row?.connectorsDetailed)
+          ? row.connectorsDetailed
+          : null;
+
+        return {
+          id: String(row?.id ?? ""),
+          name: String(row?.name ?? "Charging location"),
+          address: String(row?.address ?? ""),
+          postcode: String(row?.postcode ?? ""),
+          lat,
+          lng,
+          connectors: Array.isArray(connectors) ? connectors : [],
+        } as StationLike;
+      })
+      // ✅ THIS is the key line: it removes nulls AND fixes the TypeScript type
+      .filter((x): x is StationLike => x !== null)
+  : [];
+
 
 /* =======================
    MOT Types
