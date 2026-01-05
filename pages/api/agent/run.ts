@@ -139,6 +139,90 @@ function kmToMiles(km: number): number {
   return km * 0.621371;
 }
 
+/* =======================
+   ✅ EV Reasoning & Follow-up (NEW)
+======================= */
+
+function stationConnectorCount(s: StationLike): number {
+  const cs = Array.isArray(s.connectors) ? s.connectors : [];
+  if (!cs.length) return 0;
+  let total = 0;
+  for (const c of cs) {
+    const n = toNum((c as any)?.count) ?? 1;
+    total += Math.max(1, Math.floor(n));
+  }
+  return total;
+}
+
+function stationMaxPowerKw(s: StationLike): number {
+  const cs = Array.isArray(s.connectors) ? s.connectors : [];
+  let max = 0;
+  for (const c of cs) {
+    const p = toNum((c as any)?.power_kw ?? (c as any)?.power);
+    if (p != null && p > max) max = p;
+  }
+  return max;
+}
+
+function buildEvReasonLabels(
+  nearby: Array<{ s: StationLike; dKm: number }>
+): Array<{ reason: string; tags: string[] }> {
+  if (!nearby.length) return [];
+
+  const byDistance = [...nearby].sort((a, b) => a.dKm - b.dKm);
+  const closestId = byDistance[0]?.s?.id ?? "closest";
+
+  const byConnectors = [...nearby].sort(
+    (a, b) => stationConnectorCount(b.s) - stationConnectorCount(a.s)
+  );
+  const mostConnectorsId = byConnectors[0]?.s?.id ?? "connectors";
+
+  const byPower = [...nearby].sort((a, b) => stationMaxPowerKw(b.s) - stationMaxPowerKw(a.s));
+  const topPowerId = byPower[0]?.s?.id ?? "power";
+  const topPowerVal = stationMaxPowerKw(byPower[0]?.s || ({} as any));
+
+  return nearby.map((x) => {
+    const tags: string[] = [];
+    if ((x.s.id ?? "") === closestId) tags.push("Closest option");
+
+    const cc = stationConnectorCount(x.s);
+    if ((x.s.id ?? "") === mostConnectorsId && cc > 1) tags.push(`More connectors (${cc})`);
+
+    const p = stationMaxPowerKw(x.s);
+    if ((x.s.id ?? "") === topPowerId && topPowerVal >= 22) tags.push(`Faster charging (${Math.round(topPowerVal)} kW)`);
+
+    if (!tags.length) tags.push("Good backup choice");
+
+    return { reason: tags[0], tags };
+  });
+}
+
+function pickEvFollowUpQuestion(opts: {
+  postcode: string | null;
+  place: string | null;
+  text: string;
+  nearbyCount: number;
+  hasHighPower: boolean;
+}): string {
+  const t = (opts.text || "").toLowerCase();
+
+  if (/(rapid|fast|ccs|chademo|motorway|trip|journey)/i.test(t)) {
+    return "Do you want the fastest charger (rapid) or the closest one?";
+  }
+
+  if (opts.hasHighPower) {
+    return "Do you need rapid charging (fast) or standard charging (cheaper/longer stay)?";
+  }
+
+  if (opts.nearbyCount === 0) {
+    return "Should I widen the search radius to 20 miles, or do you want to try a nearby postcode?";
+  }
+
+  return opts.postcode
+    ? "Is this for daily local charging (home/work) or a one-off trip charge?"
+    : "Do you prefer the closest charger, or a site with more connectors (better availability)?";
+}
+
 // ✅ signature: lat1,lng1,lat2,lng2
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   const R = 6371;
@@ -204,7 +288,7 @@ async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number
     return { lat, lng };
   }
 
-  // 1) Try postcodes.io places with more than 1 result
+  // 1) Try places with more than 1 result
   try {
     const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q)}&limit=10`;
     const r = await fetch(url, { method: "GET" });
@@ -241,7 +325,7 @@ async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number
     }
   }
 
-  // 3) Fallback: postcodes search (sometimes places API is sparse)
+  // 3) Fallback: postcodes search
   try {
     const url2 = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(q)}&limit=10`;
     const r2 = await fetch(url2, { method: "GET" });
@@ -942,7 +1026,7 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
 }
 
 /* =======================
-   EV tool (fixed)
+   EV tool (fixed + improved outputs)
 ======================= */
 
 function appendQuery(url: string, key: string, value: string) {
@@ -954,13 +1038,11 @@ async function fetchStationsFeed(
   tool_calls: AgentResponse["meta"]["tool_calls"],
   whereLabel: string | null
 ): Promise<any> {
-  // First try: plain feed
   const t0 = Date.now();
   const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
   tool_calls.push({ name: "ev_stations_feed", ok: r.ok, ms: Date.now() - t0 });
   if (r.ok) return await r.json();
 
-  // If feed fails, try adding q (safe; if backend ignores, no harm)
   if (whereLabel) {
     const url2 = appendQuery(EV_FINDER_STATIONS_URL, "q", whereLabel);
     const t1 = Date.now();
@@ -969,7 +1051,6 @@ async function fetchStationsFeed(
     if (r2.ok) return await r2.json();
   }
 
-  // final: throw
   throw new Error(`Stations feed returned ${r.status}`);
 }
 
@@ -1025,7 +1106,6 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
-  // Prefer Supabase stations if configured; fallback to EV Finder feed.
   let raw: any = null;
   let usedSource: "supabase" | "feed" = "feed";
 
@@ -1108,6 +1188,7 @@ async function tool_get_ev_chargers_near_postcode(
         analysis: [
           `Stations source: ${usedSource}. Parsed 0 usable stations (lat/lng missing).`,
           "Tip: Open EV Finder and search manually.",
+          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
         ],
         recommended_next_step: "Open EV Charger Finder to view chargers on the map.",
       },
@@ -1128,7 +1209,6 @@ async function tool_get_ev_chargers_near_postcode(
     })
     .filter((x): x is { s: StationLike; dKm: number } => x !== null);
 
-  // 10 miles radius
   const radiusMiles = 10;
   const radiusKm = radiusMiles / 0.621371;
 
@@ -1158,22 +1238,21 @@ async function tool_get_ev_chargers_near_postcode(
               ]
             : []),
           "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
+          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
         ],
         recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
       },
       actions: [
-        {
-          label: "Open EV Charger Finder",
-          href: postcode
-            ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
-            : `https://ev.autodun.com/`,
-          type: "primary",
-        },
+        { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_no_nearby"] },
     };
   }
+
+  const reasonLabels = buildEvReasonLabels(nearby);
+  const hasHighPower = nearby.some((x) => stationMaxPowerKw(x.s) >= 22);
+  const followUp = pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: nearby.length, hasHighPower });
 
   return {
     status: "ok",
@@ -1192,23 +1271,20 @@ async function tool_get_ev_chargers_near_postcode(
           const tail = cs ? ` — ${cs}` : "";
           const where = x.s.address || x.s.postcode || "";
           const mi = kmToMiles(x.dKm);
-          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${mi.toFixed(1)} mi)`;
+
+          const reason = reasonLabels[i]?.reason ? `\n   Reason: ${reasonLabels[i].reason}` : "";
+          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${mi.toFixed(1)} mi)${reason}`;
         }),
         "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
+        `Question: ${followUp}`,
       ],
       recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
     },
     actions: [
-      {
-        label: "Open EV Charger Finder",
-        href: postcode
-          ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
-          : `https://ev.autodun.com/`,
-        type: "primary",
-      },
+      { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
-    meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok"] },
+    meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok", "EV_reasoning", "EV_followup"] },
   };
 }
 
