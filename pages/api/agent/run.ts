@@ -41,11 +41,31 @@ function requestId() {
 }
 
 /* =======================
+   ✅ NEW (minimal): UK postcode normaliser
+======================= */
+
+function normalizeUkPostcode(raw?: string | null): string | null {
+  if (!raw) return null;
+  const s = raw.toUpperCase().replace(/\s+/g, "").trim();
+  if (s.length < 5 || s.length > 7) return null;
+  const formatted = s.slice(0, -3) + " " + s.slice(-3);
+  const ok = /^[A-Z]{1,2}\d[A-Z\d]?\s\d[A-Z]{2}$/.test(formatted);
+  return ok ? formatted : null;
+}
+
+/* =======================
    Intent Classification
 ======================= */
 
 function classifyIntent(text: string): AgentIntent {
   const t = (text || "").toLowerCase();
+
+  // ✅ NEW (minimal): booking request should be out-of-scope
+  // (Important: do this BEFORE EV intent so it doesn't get stuck on "need postcode")
+  const looksLikeBooking =
+    /\b(book|reserve|booking|schedule|slot)\b/.test(t) &&
+    /\b(charger|charging|charge point|station)\b/.test(t);
+  if (looksLikeBooking) return "unknown_out_of_scope";
 
   // Explicit OOS
   if (
@@ -108,9 +128,11 @@ function extractMileage(text: string): number | null {
 }
 
 // ✅ NEW: postcode extractor (EV workflow)
+// (kept, but now normalised)
 function extractPostcode(text: string): string | null {
   const m = (text || "").toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/);
-  return m ? m[1].replace(/\s+/g, " ").trim() : null;
+  const raw = m ? m[1].replace(/\s+/g, " ").trim() : null;
+  return normalizeUkPostcode(raw);
 }
 
 /* =======================
@@ -750,15 +772,18 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
 async function tool_get_ev_chargers_near_postcode(
   text: string,
   id: string,
-  tool_calls: AgentResponse["meta"]["tool_calls"]
+  tool_calls: AgentResponse["meta"]["tool_calls"],
+  postcodeFromUrl?: string | null
 ): Promise<AgentResponse> {
-  const postcode = extractPostcode(text);
-  if (!postcode) {
+  // ✅ NEW: allow postcode from URL query OR from text
+  const pc = normalizeUkPostcode(postcodeFromUrl) || extractPostcode(text);
+
+  if (!pc) {
     return {
       status: "needs_clarification",
       intent: "ev_charging_readiness",
       sections: {
-        understanding: "You want EV charging options, but I need a UK postcode to find nearby chargers.",
+        understanding: "You want EV charging options, but I need a valid UK postcode to find nearby chargers.",
         analysis: ["Example: “chargers near SW1A 1AA”"],
         recommended_next_step: "Reply with your postcode (e.g., SW1A 1AA).",
       },
@@ -769,6 +794,8 @@ async function tool_get_ev_chargers_near_postcode(
       meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_postcode_needed"] },
     };
   }
+
+  const postcode = pc;
 
   // ✅ uses wrapper so we get null (not build-breaking)
   const tGeo = Date.now();
@@ -1005,11 +1032,16 @@ function makeOOS(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): A
     intent: "unknown_out_of_scope",
     sections: {
       understanding: "This request is outside the current Autodun AI Assistant scope.",
-      analysis: ["Supported workflow here: MOT Intelligence (Layered).", "Try: “MOT for ML58FOU”."],
-      recommended_next_step: "Send your VRM (example: ML58FOU) to generate MOT Intelligence.",
+      analysis: [
+        "Supported workflows: EV charger lookup by postcode; MOT Intelligence (Layered).",
+        "Try: “chargers near SW1A 1AA” or “MOT for ML58FOU”.",
+        "Note: Autodun cannot book/reserve chargers (operator apps handle that).",
+      ],
+      recommended_next_step: "Send a UK postcode for EV (e.g., SW1A 1AA) or a VRM for MOT (e.g., ML58FOU).",
     },
     actions: [
-      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
     meta: {
@@ -1077,6 +1109,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
+  // ✅ NEW (minimal): read postcode from URL query too
+  const qPostcode = typeof req.query?.postcode === "string" ? req.query.postcode : null;
+
   /* =======================
      ✅ EV SUPPORT (minimal)
      (FIXED: return AgentResponse directly)
@@ -1084,7 +1119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (intent === "ev_charging_readiness") {
     try {
-      const out = await tool_get_ev_chargers_near_postcode(text, id, tool_calls);
+      const out = await tool_get_ev_chargers_near_postcode(text, id, tool_calls, qPostcode);
       return res.status(200).json(out);
     } catch (e: any) {
       const out: AgentResponse = {
