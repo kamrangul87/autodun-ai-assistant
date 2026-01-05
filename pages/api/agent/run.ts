@@ -175,33 +175,101 @@ async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: nu
   }
 }
 
-// ✅ Improved: places -> fallback to postcodes?q=
+// ✅ FIXED: places -> choose best result (prefer Greater London), retry with ", London" if ambiguous
 async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number } | null> {
+  const q = (place || "").trim();
+  if (!q) return null;
+
+  function scorePlaceRow(p: any): number {
+    const text = `${p?.name ?? ""} ${p?.region ?? ""} ${p?.admin_county ?? ""} ${p?.admin_district ?? ""} ${p?.country ?? ""}`.toLowerCase();
+    let s = 0;
+
+    if (text.includes("greater london")) s += 200;
+    if (text.includes("london borough")) s += 150;
+    if (text.includes("london")) s += 120;
+    if (text.includes("england")) s += 10;
+
+    return s;
+  }
+
+  function pickBest(list: any[]): { lat: number; lng: number } | null {
+    if (!Array.isArray(list) || !list.length) return null;
+    const ranked = [...list].sort((a, b) => scorePlaceRow(b) - scorePlaceRow(a));
+    const best = ranked[0];
+
+    const lat = toNum(best?.latitude);
+    const lng = toNum(best?.longitude);
+    if (lat == null || lng == null) return null;
+
+    return { lat, lng };
+  }
+
+  // 1) Try postcodes.io places with more than 1 result
   try {
-    const url = `https://api.postcodes.io/places?q=${encodeURIComponent(place)}&limit=1`;
+    const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q)}&limit=10`;
     const r = await fetch(url, { method: "GET" });
     const j = await r.json().catch(() => null);
 
-    const p = Array.isArray(j?.result) ? j.result[0] : null;
-    const lat = toNum(p?.latitude);
-    const lng = toNum(p?.longitude);
+    const list = Array.isArray(j?.result) ? j.result : [];
+    const best = pickBest(list);
 
-    if (r.ok && lat != null && lng != null) return { lat, lng };
+    if (r.ok && best) {
+      const ranked = [...list].sort((a, b) => scorePlaceRow(b) - scorePlaceRow(a));
+      const top = ranked[0];
+      const topText = `${top?.region ?? ""} ${top?.admin_county ?? ""} ${top?.admin_district ?? ""}`.toLowerCase();
+      const londonLikely = topText.includes("london");
+      if (londonLikely) return best;
+      // else: fall through to retry with London hint
+    }
   } catch {
     // ignore
   }
 
-  // fallback: sometimes place search is sparse; try postcodes search
+  // 2) Retry with explicit London hint (only if user didn't already type London)
+  if (!/london/i.test(q)) {
+    const q2 = `${q}, London`;
+    try {
+      const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q2)}&limit=10`;
+      const r = await fetch(url, { method: "GET" });
+      const j = await r.json().catch(() => null);
+
+      const list = Array.isArray(j?.result) ? j.result : [];
+      const best = pickBest(list);
+      if (r.ok && best) return best;
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3) Fallback: postcodes search (sometimes places API is sparse)
   try {
-    const url2 = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(place)}&limit=1`;
+    const url2 = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(q)}&limit=10`;
     const r2 = await fetch(url2, { method: "GET" });
     const j2 = await r2.json().catch(() => null);
 
-    const p2 = Array.isArray(j2?.result) ? j2.result[0] : null;
-    const lat2 = toNum(p2?.latitude);
-    const lng2 = toNum(p2?.longitude);
+    const list2 = Array.isArray(j2?.result) ? j2.result : [];
+    if (r2.ok && list2.length) {
+      const ranked2 = [...list2].sort((a, b) => {
+        const ta = `${a?.admin_county ?? ""} ${a?.admin_district ?? ""} ${a?.region ?? ""}`.toLowerCase();
+        const tb = `${b?.admin_county ?? ""} ${b?.admin_district ?? ""} ${b?.region ?? ""}`.toLowerCase();
 
-    if (r2.ok && lat2 != null && lng2 != null) return { lat: lat2, lng: lng2 };
+        const sa =
+          (ta.includes("greater london") ? 200 : 0) +
+          (ta.includes("london") ? 120 : 0) +
+          (ta.includes("england") ? 10 : 0);
+        const sb =
+          (tb.includes("greater london") ? 200 : 0) +
+          (tb.includes("london") ? 120 : 0) +
+          (tb.includes("england") ? 10 : 0);
+
+        return sb - sa;
+      });
+
+      const best2 = ranked2[0];
+      const lat2 = toNum(best2?.latitude);
+      const lng2 = toNum(best2?.longitude);
+      if (lat2 != null && lng2 != null) return { lat: lat2, lng: lng2 };
+    }
   } catch {
     // ignore
   }
@@ -1094,7 +1162,13 @@ async function tool_get_ev_chargers_near_postcode(
         recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
       },
       actions: [
-        { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
+        {
+          label: "Open EV Charger Finder",
+          href: postcode
+            ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+            : `https://ev.autodun.com/`,
+          type: "primary",
+        },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_no_nearby"] },
@@ -1125,7 +1199,13 @@ async function tool_get_ev_chargers_near_postcode(
       recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
     },
     actions: [
-      { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
+      {
+        label: "Open EV Charger Finder",
+        href: postcode
+          ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+          : `https://ev.autodun.com/`,
+        type: "primary",
+      },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
     meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok"] },
