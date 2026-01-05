@@ -1082,14 +1082,14 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
-  const scored = stations
-    .map((s) => {
-      const ll = stationLatLng(s);
-      if (!ll) return null;
-      const d = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
-      return { s, d };
-    })
-    .filter((s): s is StationLike => s !== null) as Array<{ s: StationLike; d: number }>;
+ const scored = stations
+  .map((s): { s: StationLike; d: number } | null => {
+    const ll = stationLatLng(s);
+    if (!ll) return null;
+    const d = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
+    return { s, d };
+  })
+  .filter((x): x is { s: StationLike; d: number } => x !== null);
 
   const nearby = scored
     .filter((x) => x.d <= 10)
