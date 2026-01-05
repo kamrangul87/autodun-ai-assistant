@@ -113,7 +113,6 @@ function extractPostcode(text: string): string | null {
   return m ? m[1].replace(/\s+/g, " ").trim() : null;
 }
 
-
 // ✅ NEW: place/city extractor (EV workflow) — e.g., "near Ilford", "in Manchester"
 function extractPlaceName(text: string): string | null {
   const t = (text || "").trim();
@@ -156,12 +155,21 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
+// ✅ Added: km→miles (for display + 10-mile radius)
+function kmToMiles(km: number) {
+  return km * 0.621371;
+}
+
 async function geocodeUKPostcode(postcode: string) {
   const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`;
   const r = await fetch(url, { method: "GET" });
   const j = await r.json().catch(() => null);
 
-  if (!r.ok || typeof j?.result?.latitude !== "number" || typeof j?.result?.longitude !== "number") {
+  if (
+    !r.ok ||
+    typeof j?.result?.latitude !== "number" ||
+    typeof j?.result?.longitude !== "number"
+  ) {
     const msg = j?.error || `Postcode lookup failed (${r.status})`;
     throw new Error(msg);
   }
@@ -178,11 +186,10 @@ async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: nu
   }
 }
 
-
-// ✅ NEW: geocode UK place/city using postcodes.io Places API (Ilford, Manchester, etc.)
+// ✅ FIXED: geocode UK place/city using postcodes search (more reliable than /places)
 async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number } | null> {
   try {
-    const url = `https://api.postcodes.io/places?q=${encodeURIComponent(place)}&limit=1`;
+    const url = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(place)}&limit=1`;
     const r = await fetch(url, { method: "GET" });
     const j = await r.json().catch(() => null);
 
@@ -210,9 +217,17 @@ type StationLike = {
 
 function stationLatLng(s: StationLike): { lat: number; lng: number } | null {
   const lat =
-    typeof s.lat === "number" ? s.lat : typeof s.location?.lat === "number" ? s.location.lat : null;
+    typeof s.lat === "number"
+      ? s.lat
+      : typeof s.location?.lat === "number"
+      ? s.location.lat
+      : null;
   const lng =
-    typeof s.lng === "number" ? s.lng : typeof s.location?.lng === "number" ? s.location.lng : null;
+    typeof s.lng === "number"
+      ? s.lng
+      : typeof s.location?.lng === "number"
+      ? s.location.lng
+      : null;
   if (lat == null || lng == null) return null;
   return { lat, lng };
 }
@@ -231,17 +246,13 @@ function connectorSummary(s: StationLike) {
   );
 
   const maxPower = Math.max(
-    ...cs
-      .map((c) => Number(c?.power_kw ?? c?.power ?? 0))
-      .filter((n): n is number => Number.isFinite(n))
+    ...cs.map((c) => Number(c?.power_kw ?? c?.power ?? 0)).filter((n): n is number => Number.isFinite(n))
   );
 
   const t = types.length ? types.join(", ") : "Unknown";
   const p = maxPower > 0 ? ` (up to ${Math.round(maxPower)}kW)` : "";
   return `Connectors: ${t}${p}`;
 }
-
-
 
 // ✅ NEW: optional Supabase stations fetch (preferred when env vars are present)
 // Uses PostgREST directly (no extra dependencies).
@@ -678,7 +689,9 @@ function buildLayer7(input: {
   if (topFixNow.length) {
     actionLines.push(`Fix NOW (highest impact): ${topFixNow.join(", ")}.`);
   } else {
-    actionLines.push("Fix NOW: none strongly indicated from pattern data (still do a basic pre-MOT inspection).");
+    actionLines.push(
+      "Fix NOW: none strongly indicated from pattern data (still do a basic pre-MOT inspection)."
+    );
   }
 
   if (topMonitor.length) {
@@ -699,7 +712,8 @@ function buildLayer7(input: {
   }
 
   const evidence: string[] = [];
-  if (input.vehicle.ageYears !== null) evidence.push(`Vehicle age: ~${input.vehicle.ageYears.toFixed(1)} years.`);
+  if (input.vehicle.ageYears !== null)
+    evidence.push(`Vehicle age: ~${input.vehicle.ageYears.toFixed(1)} years.`);
   if (input.vehicle.mileage !== null)
     evidence.push(`Latest recorded mileage: ${input.vehicle.mileage.toLocaleString()} miles.`);
 
@@ -826,7 +840,8 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
 
     let trend: "worsening" | "stable" | "improving" = "stable";
     if (s.last_seen < currentYear - 3) trend = "improving";
-    else if (s.last_seen >= currentYear - 1 && recentCount >= Math.max(2, olderCount)) trend = "worsening";
+    else if (s.last_seen >= currentYear - 1 && recentCount >= Math.max(2, olderCount))
+      trend = "worsening";
 
     return { theme, repeat_count: s.count, last_seen_year: s.last_seen, trend };
   });
@@ -881,7 +896,7 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
   };
 }
 
-// ✅ EV tool: chargers near postcode (FIXED, returns AgentResponse directly)
+// ✅ EV tool: chargers near postcode/place (returns AgentResponse directly)
 async function tool_get_ev_chargers_near_postcode(
   text: string,
   id: string,
@@ -896,19 +911,26 @@ async function tool_get_ev_chargers_near_postcode(
       status: "needs_clarification",
       intent: "ev_charging_readiness",
       sections: {
-        understanding: "You want EV charging options, but I need a UK postcode (or a UK place/city name) to find nearby chargers.",
-        analysis: ["Example: “chargers near SW1A 1AA”"],
-        recommended_next_step: "Reply with your postcode (e.g., SW1A 1AA) or a place/city (e.g., Ilford, Manchester).",
+        understanding:
+          "You want EV charging options, but I need a UK postcode (or a UK place/city name) to find nearby chargers.",
+        analysis: ["Example: “chargers near SW1A 1AA”", "Or: “chargers near Ilford”"],
+        recommended_next_step:
+          "Reply with your postcode (e.g., SW1A 1AA) or a place/city (e.g., Ilford, Manchester).",
       },
       actions: [
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_postcode_needed"] },
+      meta: {
+        request_id: id,
+        tool_calls,
+        version: MOT_INTELLIGENCE_VERSION,
+        layers: ["EV_intent", "EV_postcode_needed"],
+      },
     };
   }
 
-  // ✅ Geocode either postcode or place/city (returns null instead of throwing)
+  // ✅ Geocode either postcode or place/city
   const tGeo = Date.now();
   const geo = postcode ? await geocodePostcode(postcode) : await geocodeUKPlace(place || "");
   tool_calls.push({
@@ -923,8 +945,9 @@ async function tool_get_ev_chargers_near_postcode(
       intent: "ev_charging_readiness",
       sections: {
         understanding: postcode ? `Could not locate postcode ${postcode}.` : `Could not locate place ${place}.`,
-        analysis: ["Check the postcode format and try again."],
-        recommended_next_step: "Try another UK postcode (e.g., SW1A 1AA), or try a place/city (e.g., Ilford).",
+        analysis: ["Check the postcode format / place spelling and try again."],
+        recommended_next_step:
+          "Try another UK postcode (e.g., SW1A 1AA), or try a place/city (e.g., Ilford).",
       },
       actions: [
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
@@ -956,29 +979,24 @@ async function tool_get_ev_chargers_near_postcode(
     tool_calls.push({ name: "ev_stations_feed", ok: r.ok, ms });
 
     if (!r.ok) {
-    return {
-      status: "error",
-      intent: "ev_charging_readiness",
-      sections: {
-        understanding: "I could not fetch the EV charger feed.",
-        analysis: [`Stations feed returned ${r.status}.`],
-        recommended_next_step: "Try again in a moment.",
-      },
-      actions: [
-        { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-      ],
-      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_fetch_failed"] },
-    };
-  }
+      return {
+        status: "error",
+        intent: "ev_charging_readiness",
+        sections: {
+          understanding: "I could not fetch the EV charger feed.",
+          analysis: [`Stations feed returned ${r.status}.`],
+          recommended_next_step: "Try again in a moment.",
+        },
+        actions: [
+          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_fetch_failed"] },
+      };
+    }
 
     raw = await r.json();
   }
-
-  // ✅ Robust parsing:
-  // - If Supabase was used: raw is already StationLike[]
-  // - If feed was used: raw is the JSON payload from /api/stations
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
 
   // ✅ Robust feed parsing for your /api/stations shape
   const rawList: any[] = Array.isArray(raw)
@@ -1029,7 +1047,7 @@ async function tool_get_ev_chargers_near_postcode(
                   ? c.powerKW
                   : typeof c?.power_kw === "number"
                   ? c.power_kw
-                  : null,
+                  : undefined,
               count:
                 typeof c?.quantity === "number"
                   ? c.quantity
@@ -1044,7 +1062,7 @@ async function tool_get_ev_chargers_near_postcode(
                   ? c.power_kw
                   : typeof c?.powerKW === "number"
                   ? c.powerKW
-                  : null,
+                  : undefined,
               count:
                 typeof c?.count === "number"
                   ? c.count
@@ -1063,7 +1081,7 @@ async function tool_get_ev_chargers_near_postcode(
         lng: lng as number,
       } as StationLike;
     })
-    .filter((s): s is StationLike => s !== null) as StationLike[];
+    .filter((s): s is StationLike => s !== null);
 
   if (!stations.length) {
     return {
@@ -1082,22 +1100,27 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
- const scored = stations
-  .map((s): { s: StationLike; d: number } | null => {
-    const ll = stationLatLng(s);
-    if (!ll) return null;
-    const d = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
-    return { s, d };
-  })
-  .filter((x): x is { s: StationLike; d: number } => x !== null);
+  // ✅ TS-safe scored array (fixes your build error) + keep km internally
+  const scored = stations
+    .map((s): { s: StationLike; dKm: number } | null => {
+      const ll = stationLatLng(s);
+      if (!ll) return null;
+      const dKm = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
+      return { s, dKm };
+    })
+    .filter((x): x is { s: StationLike; dKm: number } => x !== null);
+
+  // ✅ 10 miles radius (not 10km)
+  const RADIUS_MILES = 10;
+  const RADIUS_KM = RADIUS_MILES / 0.621371;
 
   const nearby = scored
-    .filter((x) => x.d <= 10)
-    .sort((a, b) => a.d - b.d)
+    .filter((x) => x.dKm <= RADIUS_KM)
+    .sort((a, b) => a.dKm - b.dKm)
     .slice(0, 5);
 
   if (!nearby.length) {
-    const closest = scored.sort((a, b) => a.d - b.d).slice(0, 5);
+    const closest = scored.sort((a, b) => a.dKm - b.dKm).slice(0, 5);
 
     return {
       status: "ok",
@@ -1105,13 +1128,15 @@ async function tool_get_ev_chargers_near_postcode(
       sections: {
         understanding: `EV charging options near ${whereLabel}.`,
         analysis: [
-          "No stations found within 10km in the current feed.",
+          `No stations found within ${RADIUS_MILES} miles in the current feed.`,
           ...(closest.length
             ? [
                 "Closest chargers (widened search):",
                 ...closest.map(
                   (x, i) =>
-                    `${i + 1}. ${x.s.name} — ${x.s.address || x.s.postcode || ""} — ~${x.d.toFixed(1)} km`
+                    `${i + 1}. ${x.s.name} — ${x.s.address || x.s.postcode || ""} — ~${kmToMiles(
+                      x.dKm
+                    ).toFixed(1)} miles`
                 ),
               ]
             : []),
@@ -1120,7 +1145,13 @@ async function tool_get_ev_chargers_near_postcode(
         recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
       },
       actions: [
-        { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
+        {
+          label: "Open EV Charger Finder",
+          href: postcode
+            ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+            : `https://ev.autodun.com/`,
+          type: "primary",
+        },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
       meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_no_nearby"] },
@@ -1133,24 +1164,30 @@ async function tool_get_ev_chargers_near_postcode(
     sections: {
       understanding: `EV charging options near ${whereLabel}.`,
       analysis: [
-        "Top chargers near your postcode:",
+        `Top chargers within ${RADIUS_MILES} miles:`,
         ...nearby.map((x, i) => {
-         const cs = (x.s.connectors || [])
-    .slice(0, 2)
-   .map((c) => String(c?.type ?? "").trim())
-   .filter((t): t is string => t.length > 0)
-    .join(", ");
+          const cs = (x.s.connectors || [])
+            .slice(0, 2)
+            .map((c) => String(c?.type ?? "").trim())
+            .filter((t): t is string => t.length > 0)
+            .join(", ");
 
           const tail = cs ? ` — ${cs}` : "";
           const where = x.s.address || x.s.postcode || "";
-          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${x.d.toFixed(1)} km)`;
+          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${kmToMiles(x.dKm).toFixed(1)} miles)`;
         }),
         "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
       ],
       recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
     },
     actions: [
-      { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
+      {
+        label: "Open EV Charger Finder",
+        href: postcode
+          ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+          : `https://ev.autodun.com/`,
+        type: "primary",
+      },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
     meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok"] },
@@ -1241,7 +1278,6 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
 
   /* =======================
      ✅ EV SUPPORT (minimal)
-     (FIXED: return AgentResponse directly)
   ======================= */
 
   if (intent === "ev_charging_readiness") {
@@ -1390,6 +1426,6 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     };
     return res.status(200).json(out);
   }
-}
+};
 
 export default handler;
