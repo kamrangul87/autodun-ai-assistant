@@ -3,7 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 /* =======================
    CANONICAL: MOT Intelligence v3 (Layered)
    Layers 1–7 implemented here.
- цикл  Minimal, surgical edits only.
+   Minimal, surgical edits only.
 ======================= */
 
 /* =======================
@@ -116,29 +116,14 @@ function extractPlaceName(text: string): string | null {
   // If there's already a postcode, prefer postcode flow.
   if (extractPostcode(t)) return null;
 
-  // ✅ handles: "chargers near ilford" / "station in barking" / "debug ev ilford"
   const m = t.match(/\b(?:near|in|around)\s+([A-Za-z][A-Za-z\s\-']{2,50})/i);
   const raw = (m?.[1] || "").trim();
-
-  // debug pattern: "debug ev ilford"
-  if (!raw) {
-    const m2 = t.match(/^\s*debug\s+ev\s+([A-Za-z][A-Za-z\s\-']{2,50})/i);
-    const raw2 = (m2?.[1] || "").trim();
-    if (raw2) {
-      const cleaned2 = raw2.split(/[.,;:!?]/)[0].trim();
-      if (cleaned2.length >= 2 && cleaned2.length <= 50) return cleaned2;
-    }
-    return null;
-  }
+  if (!raw) return null;
 
   const cleaned = raw.split(/[.,;:!?]/)[0].trim();
   if (cleaned.length < 2 || cleaned.length > 50) return null;
 
   return cleaned;
-}
-
-function isDebugEV(text: string): boolean {
-  return /^\s*debug\s+ev\b/i.test(text || "");
 }
 
 /* =======================
@@ -152,6 +137,90 @@ function toNum(v: any): number | null {
 
 function kmToMiles(km: number): number {
   return km * 0.621371;
+}
+
+/* =======================
+   ✅ EV Reasoning & Follow-up (NEW)
+======================= */
+
+function stationConnectorCount(s: StationLike): number {
+  const cs = Array.isArray(s.connectors) ? s.connectors : [];
+  if (!cs.length) return 0;
+  let total = 0;
+  for (const c of cs) {
+    const n = toNum((c as any)?.count) ?? 1;
+    total += Math.max(1, Math.floor(n));
+  }
+  return total;
+}
+
+function stationMaxPowerKw(s: StationLike): number {
+  const cs = Array.isArray(s.connectors) ? s.connectors : [];
+  let max = 0;
+  for (const c of cs) {
+    const p = toNum((c as any)?.power_kw ?? (c as any)?.power);
+    if (p != null && p > max) max = p;
+  }
+  return max;
+}
+
+function buildEvReasonLabels(
+  nearby: Array<{ s: StationLike; dKm: number }>
+): Array<{ reason: string; tags: string[] }> {
+  if (!nearby.length) return [];
+
+  const byDistance = [...nearby].sort((a, b) => a.dKm - b.dKm);
+  const closestId = byDistance[0]?.s?.id ?? "closest";
+
+  const byConnectors = [...nearby].sort(
+    (a, b) => stationConnectorCount(b.s) - stationConnectorCount(a.s)
+  );
+  const mostConnectorsId = byConnectors[0]?.s?.id ?? "connectors";
+
+  const byPower = [...nearby].sort((a, b) => stationMaxPowerKw(b.s) - stationMaxPowerKw(a.s));
+  const topPowerId = byPower[0]?.s?.id ?? "power";
+  const topPowerVal = stationMaxPowerKw(byPower[0]?.s || ({} as any));
+
+  return nearby.map((x) => {
+    const tags: string[] = [];
+    if ((x.s.id ?? "") === closestId) tags.push("Closest option");
+
+    const cc = stationConnectorCount(x.s);
+    if ((x.s.id ?? "") === mostConnectorsId && cc > 1) tags.push(`More connectors (${cc})`);
+
+    const p = stationMaxPowerKw(x.s);
+    if ((x.s.id ?? "") === topPowerId && topPowerVal >= 22) tags.push(`Faster charging (${Math.round(topPowerVal)} kW)`);
+
+    if (!tags.length) tags.push("Good backup choice");
+
+    return { reason: tags[0], tags };
+  });
+}
+
+function pickEvFollowUpQuestion(opts: {
+  postcode: string | null;
+  place: string | null;
+  text: string;
+  nearbyCount: number;
+  hasHighPower: boolean;
+}): string {
+  const t = (opts.text || "").toLowerCase();
+
+  if (/(rapid|fast|ccs|chademo|motorway|trip|journey)/i.test(t)) {
+    return "Do you want the fastest charger (rapid) or the closest one?";
+  }
+
+  if (opts.hasHighPower) {
+    return "Do you need rapid charging (fast) or standard charging (cheaper/longer stay)?";
+  }
+
+  if (opts.nearbyCount === 0) {
+    return "Should I widen the search radius to 20 miles, or do you want to try a nearby postcode?";
+  }
+
+  return opts.postcode
+    ? "Is this for daily local charging (home/work) or a one-off trip charge?"
+    : "Do you prefer the closest charger, or a site with more connectors (better availability)?";
 }
 
 // ✅ signature: lat1,lng1,lat2,lng2
@@ -190,51 +259,100 @@ async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: nu
   }
 }
 
-/**
- * ✅ Place geocode strategy:
- * 1) /places?q=place (limit=5) => pick first usable
- * 2) /places?q=place, London (limit=5) => if still null
- * 3) fallback /postcodes?q=place (limit=5)
- */
+// ✅ FIXED: places -> choose best result (prefer Greater London), retry with ", London" if ambiguous
 async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number } | null> {
-  const tryPlaces = async (q: string) => {
-    const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q)}&limit=5`;
+  const q = (place || "").trim();
+  if (!q) return null;
+
+  function scorePlaceRow(p: any): number {
+    const text = `${p?.name ?? ""} ${p?.region ?? ""} ${p?.admin_county ?? ""} ${p?.admin_district ?? ""} ${p?.country ?? ""}`.toLowerCase();
+    let s = 0;
+
+    if (text.includes("greater london")) s += 200;
+    if (text.includes("london borough")) s += 150;
+    if (text.includes("london")) s += 120;
+    if (text.includes("england")) s += 10;
+
+    return s;
+  }
+
+  function pickBest(list: any[]): { lat: number; lng: number } | null {
+    if (!Array.isArray(list) || !list.length) return null;
+    const ranked = [...list].sort((a, b) => scorePlaceRow(b) - scorePlaceRow(a));
+    const best = ranked[0];
+
+    const lat = toNum(best?.latitude);
+    const lng = toNum(best?.longitude);
+    if (lat == null || lng == null) return null;
+
+    return { lat, lng };
+  }
+
+  // 1) Try places with more than 1 result
+  try {
+    const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q)}&limit=10`;
     const r = await fetch(url, { method: "GET" });
     const j = await r.json().catch(() => null);
+
     const list = Array.isArray(j?.result) ? j.result : [];
-    for (const p of list) {
-      const lat = toNum(p?.latitude);
-      const lng = toNum(p?.longitude);
-      if (r.ok && lat != null && lng != null) return { lat, lng };
+    const best = pickBest(list);
+
+    if (r.ok && best) {
+      const ranked = [...list].sort((a, b) => scorePlaceRow(b) - scorePlaceRow(a));
+      const top = ranked[0];
+      const topText = `${top?.region ?? ""} ${top?.admin_county ?? ""} ${top?.admin_district ?? ""}`.toLowerCase();
+      const londonLikely = topText.includes("london");
+      if (londonLikely) return best;
+      // else: fall through to retry with London hint
     }
-    return null;
-  };
-
-  try {
-    const a = await tryPlaces(place);
-    if (a) return a;
   } catch {
     // ignore
   }
 
-  // retry with ", London" (helps Barking / Ilford / etc)
-  try {
-    const b = await tryPlaces(`${place}, London`);
-    if (b) return b;
-  } catch {
-    // ignore
+  // 2) Retry with explicit London hint (only if user didn't already type London)
+  if (!/london/i.test(q)) {
+    const q2 = `${q}, London`;
+    try {
+      const url = `https://api.postcodes.io/places?q=${encodeURIComponent(q2)}&limit=10`;
+      const r = await fetch(url, { method: "GET" });
+      const j = await r.json().catch(() => null);
+
+      const list = Array.isArray(j?.result) ? j.result : [];
+      const best = pickBest(list);
+      if (r.ok && best) return best;
+    } catch {
+      // ignore
+    }
   }
 
-  // fallback: postcodes search (some place strings match outward codes)
+  // 3) Fallback: postcodes search
   try {
-    const url2 = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(place)}&limit=5`;
+    const url2 = `https://api.postcodes.io/postcodes?q=${encodeURIComponent(q)}&limit=10`;
     const r2 = await fetch(url2, { method: "GET" });
     const j2 = await r2.json().catch(() => null);
+
     const list2 = Array.isArray(j2?.result) ? j2.result : [];
-    for (const p2 of list2) {
-      const lat2 = toNum(p2?.latitude);
-      const lng2 = toNum(p2?.longitude);
-      if (r2.ok && lat2 != null && lng2 != null) return { lat: lat2, lng: lng2 };
+    if (r2.ok && list2.length) {
+      const ranked2 = [...list2].sort((a, b) => {
+        const ta = `${a?.admin_county ?? ""} ${a?.admin_district ?? ""} ${a?.region ?? ""}`.toLowerCase();
+        const tb = `${b?.admin_county ?? ""} ${b?.admin_district ?? ""} ${b?.region ?? ""}`.toLowerCase();
+
+        const sa =
+          (ta.includes("greater london") ? 200 : 0) +
+          (ta.includes("london") ? 120 : 0) +
+          (ta.includes("england") ? 10 : 0);
+        const sb =
+          (tb.includes("greater london") ? 200 : 0) +
+          (tb.includes("london") ? 120 : 0) +
+          (tb.includes("england") ? 10 : 0);
+
+        return sb - sa;
+      });
+
+      const best2 = ranked2[0];
+      const lat2 = toNum(best2?.latitude);
+      const lng2 = toNum(best2?.longitude);
+      if (lat2 != null && lng2 != null) return { lat: lat2, lng: lng2 };
     }
   } catch {
     // ignore
@@ -255,8 +373,16 @@ type StationLike = {
 };
 
 function stationLatLng(s: StationLike): { lat: number; lng: number } | null {
-  const lat = toNum((s as any).lat) ?? toNum((s as any).location?.lat) ?? null;
-  const lng = toNum((s as any).lng) ?? toNum((s as any).location?.lng) ?? null;
+  const lat =
+    toNum((s as any).lat) ??
+    toNum((s as any).location?.lat) ??
+    null;
+
+  const lng =
+    toNum((s as any).lng) ??
+    toNum((s as any).location?.lng) ??
+    null;
+
   if (lat == null || lng == null) return null;
   return { lat, lng };
 }
@@ -264,17 +390,6 @@ function stationLatLng(s: StationLike): { lat: number; lng: number } | null {
 /* =======================
    ✅ Supabase stations fetch (optional)
 ======================= */
-
-const MOT_INTELLIGENCE_VERSION = "mot_intelligence_v3_layer7";
-const MOT_HISTORY_API_URL =
-  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
-
-const EV_FINDER_STATIONS_URL =
-  process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
-
-const EV_SUPABASE_URL = process.env.EV_SUPABASE_URL || process.env.SUPABASE_URL || "";
-const EV_SUPABASE_SERVICE_ROLE_KEY =
-  process.env.EV_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 async function fetchStationsFromSupabase(
   limit = 50000
@@ -303,6 +418,7 @@ async function fetchStationsFromSupabase(
     }
 
     const rows = (await r.json()) as any[];
+
     const stations: StationLike[] = Array.isArray(rows)
       ? rows
           .map((row): StationLike | null => {
@@ -320,6 +436,7 @@ async function fetchStationsFromSupabase(
               ? connectorsRaw.map((c: any) => {
                   const power = toNum(c?.power_kw ?? c?.powerKW ?? c?.power);
                   const count = toNum(c?.count ?? c?.quantity ?? 1);
+
                   return {
                     type: String(c?.type ?? "").trim(),
                     power_kw: power != null && power > 0 ? power : undefined,
@@ -800,6 +917,19 @@ function makeMotChecklistFallback(
    MOT Intelligence v3 (Layers 1–7)
 ======================= */
 
+const MOT_INTELLIGENCE_VERSION = "mot_intelligence_v3_layer7";
+const MOT_HISTORY_API_URL =
+  process.env.MOT_PREDICTOR_API_URL || "https://mot.autodun.com/api/mot-history";
+
+// ✅ EV stations endpoint (AI assistant uses this)
+const EV_FINDER_STATIONS_URL =
+  process.env.EV_FINDER_STATIONS_URL || "https://ev.autodun.com/api/stations";
+
+// ✅ Optional: Supabase-backed EV stations (preferred when available)
+const EV_SUPABASE_URL = process.env.EV_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const EV_SUPABASE_SERVICE_ROLE_KEY =
+  process.env.EV_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
 async function tool_get_mot_intelligence_v3(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${encodeURIComponent(vrm)}`, { method: "GET" });
   if (!r.ok) throw new Error(`MOT fetch failed (${r.status})`);
@@ -896,7 +1026,7 @@ async function tool_get_mot_intelligence_v3(vrm: string) {
 }
 
 /* =======================
-   EV tool
+   EV tool (fixed + improved outputs)
 ======================= */
 
 function appendQuery(url: string, key: string, value: string) {
@@ -908,13 +1038,11 @@ async function fetchStationsFeed(
   tool_calls: AgentResponse["meta"]["tool_calls"],
   whereLabel: string | null
 ): Promise<any> {
-  // First try: plain feed
   const t0 = Date.now();
   const r = await fetch(EV_FINDER_STATIONS_URL, { method: "GET" });
   tool_calls.push({ name: "ev_stations_feed", ok: r.ok, ms: Date.now() - t0 });
   if (r.ok) return await r.json();
 
-  // If feed fails, try adding q (safe; if backend ignores, no harm)
   if (whereLabel) {
     const url2 = appendQuery(EV_FINDER_STATIONS_URL, "q", whereLabel);
     const t1 = Date.now();
@@ -923,7 +1051,6 @@ async function fetchStationsFeed(
     if (r2.ok) return await r2.json();
   }
 
-  // final: throw
   throw new Error(`Stations feed returned ${r.status}`);
 }
 
@@ -932,8 +1059,6 @@ async function tool_get_ev_chargers_near_postcode(
   id: string,
   tool_calls: AgentResponse["meta"]["tool_calls"]
 ): Promise<AgentResponse> {
-  const debug = isDebugEV(text);
-
   const postcode = extractPostcode(text);
   const place = !postcode ? extractPlaceName(text) : null;
   const whereLabel = (postcode || place || "").toString().trim();
@@ -945,7 +1070,7 @@ async function tool_get_ev_chargers_near_postcode(
       sections: {
         understanding:
           "You want EV charging options, but I need a UK postcode (or a UK place/city name) to find nearby chargers.",
-        analysis: ["Example: “chargers near SW1A 1AA”", "Or: “chargers near Ilford”", "Debug: “debug ev Ilford”"],
+        analysis: ["Example: “chargers near SW1A 1AA”", "Or: “chargers near Ilford”"],
         recommended_next_step: "Reply with your postcode (e.g., SW1A 1AA) or a place/city (e.g., Ilford, Manchester).",
       },
       actions: [
@@ -981,7 +1106,6 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
-  // Prefer Supabase stations if configured; fallback to EV Finder feed.
   let raw: any = null;
   let usedSource: "supabase" | "feed" = "feed";
 
@@ -1055,61 +1179,6 @@ async function tool_get_ev_chargers_near_postcode(
     })
     .filter((s): s is StationLike => s !== null);
 
-  const scored = stations
-    .map((s): { s: StationLike; dKm: number } | null => {
-      const ll = stationLatLng(s);
-      if (!ll) return null;
-      const dKm = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
-      return { s, dKm };
-    })
-    .filter((x): x is { s: StationLike; dKm: number } => x !== null);
-
-  // 10 miles radius
-  const radiusMiles = 10;
-  const radiusKm = radiusMiles / 0.621371;
-
-  const nearby = scored
-    .filter((x) => x.dKm <= radiusKm)
-    .sort((a, b) => a.dKm - b.dKm)
-    .slice(0, 5);
-
-  const closest = scored.sort((a, b) => a.dKm - b.dKm).slice(0, 5);
-
-  // ✅ DEBUG MODE OUTPUT (what you showed in screenshot)
-  if (debug) {
-    return {
-      status: "ok",
-      intent: "ev_charging_readiness",
-      sections: {
-        understanding: `DEBUG EV near ${whereLabel || "(unknown)"}.`,
-        analysis: [
-          `• Input: ${whereLabel || "(none)"}`,
-          `• Geocode: lat=${geo.lat}, lng=${geo.lng}`,
-          `• Stations source: ${usedSource}`,
-          `• Raw items detected: ${rawList.length}`,
-          `• Parsed stations (usable lat/lng): ${stations.length}`,
-          `• Scored (distance computed): ${scored.length}`,
-          `• Within ${radiusMiles} miles: ${nearby.length}`,
-          `• Closest 5:`,
-          ...(closest.length
-            ? closest.map((x, i) => {
-                const mi = kmToMiles(x.dKm);
-                const where = x.s.address || x.s.postcode || "";
-                return `  ${i + 1}. ${x.s.name} — ${where} — ~${mi.toFixed(1)} mi`;
-              })
-            : ["  (none)"]),
-        ],
-        recommended_next_step:
-          "If counts look wrong, the root cause is usually limited feed size. Next step: complete EV Supabase ingestion so we search the full dataset.",
-      },
-      actions: [
-        { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-      ],
-      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_debug"] },
-    };
-  }
-
   if (!stations.length) {
     return {
       status: "ok",
@@ -1119,6 +1188,7 @@ async function tool_get_ev_chargers_near_postcode(
         analysis: [
           `Stations source: ${usedSource}. Parsed 0 usable stations (lat/lng missing).`,
           "Tip: Open EV Finder and search manually.",
+          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
         ],
         recommended_next_step: "Open EV Charger Finder to view chargers on the map.",
       },
@@ -1130,7 +1200,26 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
+  const scored = stations
+    .map((s): { s: StationLike; dKm: number } | null => {
+      const ll = stationLatLng(s);
+      if (!ll) return null;
+      const dKm = haversineKm(geo.lat, geo.lng, ll.lat, ll.lng);
+      return { s, dKm };
+    })
+    .filter((x): x is { s: StationLike; dKm: number } => x !== null);
+
+  const radiusMiles = 10;
+  const radiusKm = radiusMiles / 0.621371;
+
+  const nearby = scored
+    .filter((x) => x.dKm <= radiusKm)
+    .sort((a, b) => a.dKm - b.dKm)
+    .slice(0, 5);
+
   if (!nearby.length) {
+    const closest = scored.sort((a, b) => a.dKm - b.dKm).slice(0, 5);
+
     return {
       status: "ok",
       intent: "ev_charging_readiness",
@@ -1149,6 +1238,7 @@ async function tool_get_ev_chargers_near_postcode(
               ]
             : []),
           "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
+          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
         ],
         recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
       },
@@ -1159,6 +1249,10 @@ async function tool_get_ev_chargers_near_postcode(
       meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_no_nearby"] },
     };
   }
+
+  const reasonLabels = buildEvReasonLabels(nearby);
+  const hasHighPower = nearby.some((x) => stationMaxPowerKw(x.s) >= 22);
+  const followUp = pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: nearby.length, hasHighPower });
 
   return {
     status: "ok",
@@ -1177,9 +1271,12 @@ async function tool_get_ev_chargers_near_postcode(
           const tail = cs ? ` — ${cs}` : "";
           const where = x.s.address || x.s.postcode || "";
           const mi = kmToMiles(x.dKm);
-          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${mi.toFixed(1)} mi)`;
+
+          const reason = reasonLabels[i]?.reason ? `\n   Reason: ${reasonLabels[i].reason}` : "";
+          return `${i + 1}. ${x.s.name} — ${where}${tail} (~${mi.toFixed(1)} mi)${reason}`;
         }),
         "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
+        `Question: ${followUp}`,
       ],
       recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
     },
@@ -1187,7 +1284,7 @@ async function tool_get_ev_chargers_near_postcode(
       { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
       { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
     ],
-    meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok"] },
+    meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ok", "EV_reasoning", "EV_followup"] },
   };
 }
 
@@ -1273,7 +1370,6 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
   const intent = classifyIntent(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
-  // ✅ EV path
   if (intent === "ev_charging_readiness") {
     try {
       const out = await tool_get_ev_chargers_near_postcode(text, id, tool_calls);
@@ -1297,7 +1393,6 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     }
   }
 
-  // Non-MOT intents
   if (intent !== "mot_preparation") {
     return res.status(200).json(makeOOS(id, tool_calls));
   }
