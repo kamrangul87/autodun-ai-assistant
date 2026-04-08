@@ -46,7 +46,7 @@ const GUIDED_CHOICES: Array<{ label: string; prompt: string; hint: string; inten
     },
     {
       label: "Used car checks",
-      prompt: "I’m buying a used car — what should I check before purchase and in MOT history?",
+      prompt: "I'm buying a used car — what should I check before purchase and in MOT history?",
       hint: "Clarifies the buying workflow",
       intent: "used_car_buyer",
     },
@@ -472,49 +472,49 @@ export default function AIAssistantPage() {
       <Head>
         <title>Autodun AI Assistant | Free Automotive AI for UK Drivers — MOT, EV & Car Advice</title>
         <meta
-          name=”description”
-          content=”Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data.”
+          name="description"
+          content="Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data."
         />
-        <meta name=”robots” content=”index, follow” />
-        <link rel=”canonical” href=”https://ai.autodun.com/ai-assistant” />
+        <meta name="robots" content="index, follow" />
+        <link rel="canonical" href="https://ai.autodun.com/ai-assistant" />
       </Head>
 
-      <main style={{ backgroundColor: “#070f1a”, color: “#f0f6ff”, minHeight: “100vh” }}>
+      <main style={{ backgroundColor: "#070f1a", color: "#f0f6ff", minHeight: "100vh" }}>
 
         {/* Hero Section */}
-        <section style={{ textAlign: “center”, padding: “64px 24px 48px”, maxWidth: “800px”, margin: “0 auto” }}>
+        <section style={{ textAlign: "center", padding: "64px 24px 48px", maxWidth: "800px", margin: "0 auto" }}>
           <div style={{
-            display: “inline-flex”,
-            alignItems: “center”,
-            gap: “8px”,
-            backgroundColor: “rgba(0,212,138,0.12)”,
-            border: “1px solid rgba(0,212,138,0.3)”,
-            borderRadius: “100px”,
-            padding: “6px 16px”,
-            fontSize: “12px”,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            backgroundColor: "rgba(0,212,138,0.12)",
+            border: "1px solid rgba(0,212,138,0.3)",
+            borderRadius: "100px",
+            padding: "6px 16px",
+            fontSize: "12px",
             fontWeight: 700,
-            color: “#00d48a”,
-            letterSpacing: “0.08em”,
-            marginBottom: “24px”,
+            color: "#00d48a",
+            letterSpacing: "0.08em",
+            marginBottom: "24px",
           }}>
             ⚡ AI AUTOMOTIVE INTELLIGENCE
           </div>
 
-          <h1 style={{ fontSize: “clamp(26px, 5vw, 46px)”, fontWeight: 800, color: “#f0f6ff”, lineHeight: 1.2, margin: “0 0 16px” }}>
+          <h1 style={{ fontSize: "clamp(26px, 5vw, 46px)", fontWeight: 800, color: "#f0f6ff", lineHeight: 1.2, margin: "0 0 16px" }}>
             Your AI Co-Pilot for UK Car Decisions
           </h1>
 
-          <p style={{ fontSize: “16px”, color: “#8899aa”, lineHeight: 1.7, maxWidth: “560px”, margin: “0 auto” }}>
+          <p style={{ fontSize: "16px", color: "#8899aa", lineHeight: 1.7, maxWidth: "560px", margin: "0 auto" }}>
             Ask about MOT risk, EV charging near you, or buying a used car — get structured, explainable answers powered by real UK data
           </p>
 
           {latestRes ? (
-            <div style={{ marginTop: “20px”, display: “flex”, justifyContent: “center”, gap: “8px”, flexWrap: “wrap”, alignItems: “center” }}>
+            <div style={{ marginTop: "20px", display: "flex", justifyContent: "center", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
               <IntentChip intent={latestRes.intent} />
               <StatusChip status={latestRes.status} />
               {latestRes.meta?.request_id ? (
-                <span style={{ display: “inline-flex”, alignItems: “center”, gap: “4px”, fontSize: “11px”, color: “#8899aa” }}>
-                  <Icon name=”id” className=”h-3.5 w-3.5” />
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#8899aa" }}>
+                  <Icon name="id" className="h-3.5 w-3.5" />
                   {latestRes.meta.request_id}
                 </span>
               ) : null}
@@ -523,63 +523,63 @@ export default function AIAssistantPage() {
         </section>
 
         {/* Main content */}
-        <div style={{ maxWidth: “800px”, margin: “0 auto”, padding: “0 24px 80px” }}>
+        <div style={{ maxWidth: "800px", margin: "0 auto", padding: "0 24px 80px" }}>
 
           {/* Input Card */}
           <div style={{
-            backgroundColor: “#111f33”,
-            border: “1px solid rgba(255,255,255,0.1)”,
-            borderRadius: “14px”,
-            padding: “24px”,
+            backgroundColor: "#111f33",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: "14px",
+            padding: "24px",
           }}>
-            <label style={{ display: “block”, fontSize: “14px”, fontWeight: 600, color: “#f0f6ff”, marginBottom: “12px” }}>
+            <label style={{ display: "block", fontSize: "14px", fontWeight: 600, color: "#f0f6ff", marginBottom: "12px" }}>
               Tell me what you&apos;re trying to do…
             </label>
 
             <textarea
               style={{
-                width: “100%”,
-                backgroundColor: “#0d1b2a”,
-                border: “1px solid rgba(255,255,255,0.1)”,
-                borderRadius: “10px”,
-                padding: “14px 16px”,
-                fontSize: “15px”,
-                color: “#f0f6ff”,
+                width: "100%",
+                backgroundColor: "#0d1b2a",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "10px",
+                padding: "14px 16px",
+                fontSize: "15px",
+                color: "#f0f6ff",
                 lineHeight: 1.6,
-                resize: “vertical”,
-                outline: “none”,
-                boxSizing: “border-box”,
-                fontFamily: “inherit”,
-                transition: “border-color 0.15s”,
+                resize: "vertical",
+                outline: "none",
+                boxSizing: "border-box",
+                fontFamily: "inherit",
+                transition: "border-color 0.15s",
               }}
               rows={4}
-              placeholder=”Example: MOT intelligence for ML58FOU OR chargers near SW1A 1AA”
+              placeholder="Example: MOT intelligence for ML58FOU OR chargers near SW1A 1AA"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              onFocus={(e) => { e.currentTarget.style.borderColor = “#00d48a”; }}
-              onBlur={(e) => { e.currentTarget.style.borderColor = “rgba(255,255,255,0.1)”; }}
+              onFocus={(e) => { e.currentTarget.style.borderColor = "#00d48a"; }}
+              onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
             />
 
             {/* Prompt Chips */}
-            <div style={{ marginTop: “12px”, display: “flex”, flexWrap: “wrap”, gap: “8px” }}>
+            <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
               {PROMPT_CHIPS.map((chip) => (
                 <button
                   key={chip.text}
-                  type=”button”
+                  type="button"
                   onClick={() => setText(chip.text)}
                   style={{
-                    backgroundColor: “#111f33”,
-                    border: “1px solid rgba(255,255,255,0.1)”,
-                    borderRadius: “20px”,
-                    padding: “8px 14px”,
-                    fontSize: “13px”,
-                    color: “#c8d8e8”,
-                    cursor: “pointer”,
-                    transition: “border-color 0.15s”,
-                    fontFamily: “inherit”,
+                    backgroundColor: "#111f33",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "20px",
+                    padding: "8px 14px",
+                    fontSize: "13px",
+                    color: "#c8d8e8",
+                    cursor: "pointer",
+                    transition: "border-color 0.15s",
+                    fontFamily: "inherit",
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = “#00d48a”; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = “rgba(255,255,255,0.1)”; }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#00d48a"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
                 >
                   {chip.emoji} {chip.text}
                 </button>
@@ -587,89 +587,89 @@ export default function AIAssistantPage() {
             </div>
 
             {/* Action Buttons */}
-            <div style={{ marginTop: “16px”, display: “flex”, flexWrap: “wrap”, alignItems: “center”, gap: “10px” }}>
+            <div style={{ marginTop: "16px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
               <button
-                type=”button”
+                type="button"
                 onClick={() => runAgent()}
                 disabled={!canRun}
                 style={{
-                  backgroundColor: canRun ? “#00d48a” : “rgba(0,212,138,0.35)”,
-                  color: “#070f1a”,
+                  backgroundColor: canRun ? "#00d48a" : "rgba(0,212,138,0.35)",
+                  color: "#070f1a",
                   fontWeight: 800,
-                  borderRadius: “10px”,
-                  padding: “10px 22px”,
-                  fontSize: “14px”,
-                  border: “none”,
-                  cursor: canRun ? “pointer” : “not-allowed”,
-                  transition: “background 0.15s”,
-                  fontFamily: “inherit”,
+                  borderRadius: "10px",
+                  padding: "10px 22px",
+                  fontSize: "14px",
+                  border: "none",
+                  cursor: canRun ? "pointer" : "not-allowed",
+                  transition: "background 0.15s",
+                  fontFamily: "inherit",
                 }}
-                onMouseEnter={(e) => { if (canRun) e.currentTarget.style.backgroundColor = “#00e5a0”; }}
-                onMouseLeave={(e) => { if (canRun) e.currentTarget.style.backgroundColor = “#00d48a”; }}
+                onMouseEnter={(e) => { if (canRun) e.currentTarget.style.backgroundColor = "#00e5a0"; }}
+                onMouseLeave={(e) => { if (canRun) e.currentTarget.style.backgroundColor = "#00d48a"; }}
               >
-                {loading ? “Running analysis…” : “Analyse”}
+                {loading ? "Running analysis…" : "Analyse"}
               </button>
 
               <button
-                type=”button”
+                type="button"
                 onClick={clearAll}
                 style={{
-                  backgroundColor: “transparent”,
-                  border: “1px solid rgba(255,255,255,0.1)”,
-                  borderRadius: “10px”,
-                  padding: “10px 18px”,
-                  fontSize: “14px”,
-                  color: “#c8d8e8”,
-                  cursor: “pointer”,
-                  transition: “border-color 0.15s”,
-                  fontFamily: “inherit”,
+                  backgroundColor: "transparent",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "10px",
+                  padding: "10px 18px",
+                  fontSize: "14px",
+                  color: "#c8d8e8",
+                  cursor: "pointer",
+                  transition: "border-color 0.15s",
+                  fontFamily: "inherit",
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = “rgba(255,255,255,0.3)”; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = “rgba(255,255,255,0.1)”; }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
               >
                 Clear
               </button>
 
               <button
-                type=”button”
+                type="button"
                 onClick={copyReport}
                 disabled={!latestRes && !lastOkRes}
                 style={{
-                  display: “inline-flex”,
-                  alignItems: “center”,
-                  gap: “6px”,
-                  backgroundColor: “transparent”,
-                  border: “1px solid rgba(255,255,255,0.1)”,
-                  borderRadius: “10px”,
-                  padding: “10px 18px”,
-                  fontSize: “14px”,
-                  color: “#c8d8e8”,
-                  cursor: !latestRes && !lastOkRes ? “not-allowed” : “pointer”,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  backgroundColor: "transparent",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "10px",
+                  padding: "10px 18px",
+                  fontSize: "14px",
+                  color: "#c8d8e8",
+                  cursor: !latestRes && !lastOkRes ? "not-allowed" : "pointer",
                   opacity: !latestRes && !lastOkRes ? 0.4 : 1,
-                  transition: “border-color 0.15s”,
-                  fontFamily: “inherit”,
+                  transition: "border-color 0.15s",
+                  fontFamily: "inherit",
                 }}
-                onMouseEnter={(e) => { if (latestRes || lastOkRes) e.currentTarget.style.borderColor = “rgba(255,255,255,0.3)”; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = “rgba(255,255,255,0.1)”; }}
+                onMouseEnter={(e) => { if (latestRes || lastOkRes) e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; }}
               >
-                <Icon name=”copy” className=”h-4 w-4” />
+                <Icon name="copy" className="h-4 w-4" />
                 Copy report
               </button>
 
-              {err ? <p style={{ marginLeft: “auto”, fontSize: “14px”, color: “#ff6b6b” }}>{err}</p> : null}
+              {err ? <p style={{ marginLeft: "auto", fontSize: "14px", color: "#ff6b6b" }}>{err}</p> : null}
             </div>
           </div>
 
           {/* Trust Signals */}
-          <div style={{ marginTop: “16px”, display: “flex”, flexWrap: “wrap”, justifyContent: “center”, gap: “20px” }}>
-            <span style={{ fontSize: “12px”, color: “#8899aa” }}>🔒 Your queries are not stored</span>
-            <span style={{ fontSize: “12px”, color: “#8899aa” }}>🇬🇧 UK vehicle data only</span>
-            <span style={{ fontSize: “12px”, color: “#8899aa” }}>⚡ Powered by real DVSA + OCM data</span>
+          <div style={{ marginTop: "16px", display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "20px" }}>
+            <span style={{ fontSize: "12px", color: "#8899aa" }}>🔒 Your queries are not stored</span>
+            <span style={{ fontSize: "12px", color: "#8899aa" }}>🇬🇧 UK vehicle data only</span>
+            <span style={{ fontSize: "12px", color: "#8899aa" }}>⚡ Powered by real DVSA + OCM data</span>
           </div>
 
           {lastPrompt ? (
-            <p style={{ marginTop: “10px”, textAlign: “center”, fontSize: “12px”, color: “#556677” }}>
-              Last query: <span style={{ color: “#8899aa” }}>{lastPrompt}</span>
+            <p style={{ marginTop: "10px", textAlign: "center", fontSize: "12px", color: "#556677" }}>
+              Last query: <span style={{ color: "#8899aa" }}>{lastPrompt}</span>
               {lastAt ? <span> · {lastAt}</span> : null}
             </p>
           ) : null}
@@ -677,40 +677,40 @@ export default function AIAssistantPage() {
           {/* Result Display Card */}
           {latestRes ? (
             <section style={{
-              marginTop: “28px”,
-              backgroundColor: “#111f33”,
-              border: “1px solid rgba(0,212,138,0.2)”,
-              borderRadius: “14px”,
-              padding: “24px”,
+              marginTop: "28px",
+              backgroundColor: "#111f33",
+              border: "1px solid rgba(0,212,138,0.2)",
+              borderRadius: "14px",
+              padding: "24px",
             }}>
-              <div style={{ marginBottom: “20px”, display: “flex”, flexWrap: “wrap”, alignItems: “center”, justifyContent: “space-between”, gap: “12px” }}>
-                <div style={{ display: “flex”, alignItems: “center”, gap: “10px” }}>
-                  <span style={{ fontSize: “11px”, fontWeight: 700, color: “#00d48a”, letterSpacing: “0.07em”, textTransform: “uppercase” }}>
+              <div style={{ marginBottom: "20px", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#00d48a", letterSpacing: "0.07em", textTransform: "uppercase" }}>
                     AI Analysis
                   </span>
                   <StatusChip status={latestRes.status} />
                 </div>
-                <div style={{ display: “flex”, alignItems: “center”, gap: “8px” }}>
-                  {traceText ? <span style={{ fontSize: “11px”, color: “#8899aa” }}>{traceText}</span> : null}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  {traceText ? <span style={{ fontSize: "11px", color: "#8899aa" }}>{traceText}</span> : null}
                   <button
-                    type=”button”
+                    type="button"
                     onClick={copyLatestResultText}
                     style={{
-                      display: “inline-flex”,
-                      alignItems: “center”,
-                      gap: “6px”,
-                      backgroundColor: “transparent”,
-                      border: “1px solid rgba(255,255,255,0.1)”,
-                      borderRadius: “8px”,
-                      padding: “6px 12px”,
-                      fontSize: “12px”,
-                      color: “#c8d8e8”,
-                      cursor: “pointer”,
-                      fontFamily: “inherit”,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      backgroundColor: "transparent",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: "8px",
+                      padding: "6px 12px",
+                      fontSize: "12px",
+                      color: "#c8d8e8",
+                      cursor: "pointer",
+                      fontFamily: "inherit",
                     }}
-                    title=”Copy the latest result text”
+                    title="Copy the latest result text"
                   >
-                    <Icon name=”copy” className=”h-4 w-4” />
+                    <Icon name="copy" className="h-4 w-4" />
                     Copy result
                   </button>
                 </div>
@@ -718,23 +718,23 @@ export default function AIAssistantPage() {
 
               {needsVrmHint ? (
                 <div style={{
-                  marginBottom: “16px”,
-                  backgroundColor: “rgba(245,158,11,0.08)”,
-                  border: “1px solid rgba(245,158,11,0.25)”,
-                  borderRadius: “10px”,
-                  padding: “14px”,
-                  display: “flex”,
-                  alignItems: “flex-start”,
-                  gap: “10px”,
+                  marginBottom: "16px",
+                  backgroundColor: "rgba(245,158,11,0.08)",
+                  border: "1px solid rgba(245,158,11,0.25)",
+                  borderRadius: "10px",
+                  padding: "14px",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "10px",
                 }}>
-                  <span style={{ color: “#fbbf24”, marginTop: “2px”, flexShrink: 0 }}>
-                    <Icon name=”warn” className=”h-5 w-5” />
+                  <span style={{ color: "#fbbf24", marginTop: "2px", flexShrink: 0 }}>
+                    <Icon name="warn" className="h-5 w-5" />
                   </span>
                   <div>
-                    <p style={{ fontSize: “14px”, fontWeight: 600, color: “#fbbf24”, margin: “0 0 4px” }}>
+                    <p style={{ fontSize: "14px", fontWeight: 600, color: "#fbbf24", margin: "0 0 4px" }}>
                       Quick tip: paste your VRM to run MOT Intelligence
                     </p>
-                    <p style={{ fontSize: “12px”, color: “rgba(251,191,36,0.8)”, margin: 0 }}>
+                    <p style={{ fontSize: "12px", color: "rgba(251,191,36,0.8)", margin: 0 }}>
                       Example: <strong>ML58FOU</strong> or <strong>MOT intelligence for ML58FOU</strong>.
                     </p>
                   </div>
@@ -742,67 +742,67 @@ export default function AIAssistantPage() {
               ) : null}
 
               <Section
-                title=”Understanding your situation”
+                title="Understanding your situation"
                 body={safeText(latestRes.sections?.understanding)}
               />
-              <SectionList title=”Analysis” items={safeArray(latestRes.sections?.analysis)} />
+              <SectionList title="Analysis" items={safeArray(latestRes.sections?.analysis)} />
               <Section
-                title=”Recommended next step”
+                title="Recommended next step"
                 body={safeText(latestRes.sections?.recommended_next_step)}
               />
 
               {showGuided ? (
                 <div style={{
-                  marginTop: “20px”,
-                  backgroundColor: “#0d1b2a”,
-                  border: “1px solid rgba(255,255,255,0.07)”,
-                  borderRadius: “10px”,
-                  padding: “16px”,
+                  marginTop: "20px",
+                  backgroundColor: "#0d1b2a",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: "10px",
+                  padding: "16px",
                 }}>
-                  <h3 style={{ fontSize: “14px”, fontWeight: 600, color: “#f0f6ff”, margin: “0 0 4px” }}>Choose a goal:</h3>
-                  <p style={{ fontSize: “12px”, color: “#8899aa”, margin: “0 0 12px” }}>
+                  <h3 style={{ fontSize: "14px", fontWeight: 600, color: "#f0f6ff", margin: "0 0 4px" }}>Choose a goal:</h3>
+                  <p style={{ fontSize: "12px", color: "#8899aa", margin: "0 0 12px" }}>
                     These options add the minimum details needed for a confident route.
                   </p>
-                  <div style={{ display: “grid”, gridTemplateColumns: “repeat(auto-fit, minmax(160px, 1fr))”, gap: “8px” }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px" }}>
                     {GUIDED_CHOICES.map((c) => {
                       const meta = intentMeta(c.intent);
                       return (
                         <button
                           key={c.label}
-                          type=”button”
+                          type="button"
                           disabled={loading}
                           onClick={() => {
                             setText(c.prompt);
                             runAgent(c.prompt);
                           }}
                           style={{
-                            backgroundColor: “#111f33”,
-                            border: “1px solid rgba(255,255,255,0.1)”,
-                            borderRadius: “10px”,
-                            padding: “12px”,
-                            textAlign: “left”,
-                            cursor: loading ? “not-allowed” : “pointer”,
+                            backgroundColor: "#111f33",
+                            border: "1px solid rgba(255,255,255,0.1)",
+                            borderRadius: "10px",
+                            padding: "12px",
+                            textAlign: "left",
+                            cursor: loading ? "not-allowed" : "pointer",
                             opacity: loading ? 0.4 : 1,
-                            fontFamily: “inherit”,
+                            fontFamily: "inherit",
                           }}
                         >
-                          <div style={{ display: “flex”, alignItems: “center”, gap: “8px”, marginBottom: “6px” }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
                             <span style={{
-                              display: “inline-flex”,
-                              width: “30px”,
-                              height: “30px”,
-                              alignItems: “center”,
-                              justifyContent: “center”,
-                              backgroundColor: “#0d1b2a”,
-                              borderRadius: “8px”,
-                              color: “#00d48a”,
+                              display: "inline-flex",
+                              width: "30px",
+                              height: "30px",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              backgroundColor: "#0d1b2a",
+                              borderRadius: "8px",
+                              color: "#00d48a",
                               flexShrink: 0,
                             }}>
-                              <Icon name={meta.icon} className=”h-4 w-4” />
+                              <Icon name={meta.icon} className="h-4 w-4" />
                             </span>
-                            <span style={{ fontSize: “13px”, fontWeight: 600, color: “#f0f6ff” }}>{c.label}</span>
+                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#f0f6ff" }}>{c.label}</span>
                           </div>
-                          <div style={{ fontSize: “11px”, color: “#8899aa” }}>{c.hint}</div>
+                          <div style={{ fontSize: "11px", color: "#8899aa" }}>{c.hint}</div>
                         </button>
                       );
                     })}
@@ -811,64 +811,64 @@ export default function AIAssistantPage() {
               ) : null}
 
               {Array.isArray(latestRes.actions) && latestRes.actions.length ? (
-                <div style={{ marginTop: “20px” }}>
-                  <h3 style={{ fontSize: “12px”, fontWeight: 700, color: “#8899aa”, textTransform: “uppercase”, letterSpacing: “0.06em”, margin: “0 0 10px” }}>
+                <div style={{ marginTop: "20px" }}>
+                  <h3 style={{ fontSize: "12px", fontWeight: 700, color: "#8899aa", textTransform: "uppercase", letterSpacing: "0.06em", margin: "0 0 10px" }}>
                     Open in Tool
                   </h3>
-                  <div style={{ display: “flex”, flexWrap: “wrap”, gap: “8px” }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
                     {latestRes.actions.map((a) => (
                       <a
                         key={a.label}
                         href={a.href}
-                        target=”_blank”
-                        rel=”noreferrer”
-                        style={a.type === “primary” ? {
-                          display: “inline-flex”,
-                          alignItems: “center”,
-                          gap: “6px”,
-                          backgroundColor: “#00d48a”,
-                          color: “#070f1a”,
+                        target="_blank"
+                        rel="noreferrer"
+                        style={a.type === "primary" ? {
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          backgroundColor: "#00d48a",
+                          color: "#070f1a",
                           fontWeight: 700,
-                          borderRadius: “8px”,
-                          padding: “9px 18px”,
-                          fontSize: “14px”,
-                          textDecoration: “none”,
+                          borderRadius: "8px",
+                          padding: "9px 18px",
+                          fontSize: "14px",
+                          textDecoration: "none",
                         } : {
-                          display: “inline-flex”,
-                          alignItems: “center”,
-                          gap: “6px”,
-                          backgroundColor: “transparent”,
-                          border: “1px solid rgba(255,255,255,0.1)”,
-                          borderRadius: “8px”,
-                          padding: “9px 18px”,
-                          fontSize: “14px”,
-                          color: “#c8d8e8”,
-                          textDecoration: “none”,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          backgroundColor: "transparent",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          borderRadius: "8px",
+                          padding: "9px 18px",
+                          fontSize: "14px",
+                          color: "#c8d8e8",
+                          textDecoration: "none",
                         }}
                       >
                         {a.label}
-                        <Icon name=”external” className=”h-4 w-4” />
+                        <Icon name="external" className="h-4 w-4" />
                       </a>
                     ))}
                   </div>
                 </div>
               ) : null}
 
-              <div style={{ marginTop: “20px”, paddingTop: “16px”, borderTop: “1px solid rgba(255,255,255,0.07)”, fontSize: “11px”, color: “#556677” }}>
+              <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid rgba(255,255,255,0.07)", fontSize: "11px", color: "#556677" }}>
                 Informational guidance only. Final MOT decisions are made by authorised MOT testing centres.
               </div>
             </section>
           ) : null}
 
           {/* Last OK result fallback */}
-          {lastOkRes && (!latestRes || latestRes.status !== “ok”) ? (
-            <section style={{ marginTop: “24px”, backgroundColor: “#0d1b2a”, border: “1px solid rgba(255,255,255,0.07)”, borderRadius: “14px”, padding: “20px” }}>
-              <div style={{ marginBottom: “12px”, display: “flex”, alignItems: “center”, justifyContent: “space-between”, gap: “12px” }}>
-                <h2 style={{ fontSize: “14px”, fontWeight: 600, color: “#f0f6ff”, margin: 0 }}>Last successful result</h2>
-                <span style={{ fontSize: “12px”, color: “#556677” }}>Shown for reference only (latest result is above).</span>
+          {lastOkRes && (!latestRes || latestRes.status !== "ok") ? (
+            <section style={{ marginTop: "24px", backgroundColor: "#0d1b2a", border: "1px solid rgba(255,255,255,0.07)", borderRadius: "14px", padding: "20px" }}>
+              <div style={{ marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+                <h2 style={{ fontSize: "14px", fontWeight: 600, color: "#f0f6ff", margin: 0 }}>Last successful result</h2>
+                <span style={{ fontSize: "12px", color: "#556677" }}>Shown for reference only (latest result is above).</span>
               </div>
-              <Section title=”Understanding” body={safeText(lastOkRes.sections?.understanding)} />
-              <SectionList title=”Analysis” items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)} />
+              <Section title="Understanding" body={safeText(lastOkRes.sections?.understanding)} />
+              <SectionList title="Analysis" items={safeArray(lastOkRes.sections?.analysis).slice(0, 8)} />
             </section>
           ) : null}
 
