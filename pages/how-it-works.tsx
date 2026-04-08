@@ -61,7 +61,7 @@ export default function HowItWorks() {
 
           {/* Feature Cards */}
           <section style={{ marginBottom: "60px" }}>
-            <h2 style={{ fontSize: "20px", fontWeight: 700", marginBottom: "24px" }}>Intent-based routing (not generic chat)</h2>
+            <h2 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "24px" }}>Intent-based routing (not generic chat)</h2>
             <p style={{ fontSize: "15px", color: "#8899aa", lineHeight: 1.7, marginBottom: "24px" }}>
               When a user submits a query, Autodun AI first classifies the intent. Each intent triggers a dedicated analysis path instead of a single free-form chat response.
             </p>
