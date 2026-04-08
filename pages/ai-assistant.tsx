@@ -471,10 +471,10 @@ export default function AIAssistantPage() {
     <>
       <Head>
         <title>Autodun AI Assistant | Free Automotive AI for UK Drivers — MOT, EV & Car Advice</title>
-        <meta name=”description” content=”Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data.” />
-        <meta property=”og:title” content=”Autodun AI Assistant | Free Automotive AI for UK Drivers — MOT, EV & Car Advice” />
-        <meta property=”og:description” content=”Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data.” />
-        <meta property=”og:url” content=”https://ai.autodun.com/ai-assistant” />
+        <meta
+          name=”description”
+          content=”Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data.”
+        />
         <meta name=”robots” content=”index, follow” />
         <link rel=”canonical” href=”https://ai.autodun.com/ai-assistant” />
       </Head>

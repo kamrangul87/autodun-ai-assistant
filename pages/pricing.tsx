@@ -33,9 +33,6 @@ export default function PricingPage() {
           name="description"
           content="Autodun is free to use. Pro plan with deeper MOT insights, saved reports and reminders coming soon at £4.99/month."
         />
-        <meta property="og:title" content="Autodun Pricing | Free AI Vehicle Tools — Pro Plan Coming Soon" />
-        <meta property="og:description" content="Autodun is free to use. Pro plan with deeper MOT insights, saved reports and reminders coming soon at £4.99/month." />
-        <meta property="og:url" content="https://ai.autodun.com/pricing" />
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://ai.autodun.com/pricing" />
       </Head>

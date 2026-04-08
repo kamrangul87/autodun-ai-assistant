@@ -27,9 +27,6 @@ export default function HowItWorks() {
           name="description"
           content="Autodun AI classifies your vehicle question and routes it to a specialised workflow — not a generic chatbot. Structured, explainable outputs every time."
         />
-        <meta property="og:title" content="How Autodun AI Works | Intent-Routing Automotive Intelligence for UK Drivers" />
-        <meta property="og:description" content="Autodun AI classifies your vehicle question and routes it to a specialised workflow — not a generic chatbot. Structured, explainable outputs every time." />
-        <meta property="og:url" content="https://ai.autodun.com/how-it-works" />
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://ai.autodun.com/how-it-works" />
       </Head>
