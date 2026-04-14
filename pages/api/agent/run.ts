@@ -16,6 +16,7 @@ type AgentIntent =
   | "ev_charging_readiness"
   | "used_car_buyer"
   | "roadside_advice"
+  | "general_car_advice"
   | "unknown_out_of_scope";
 
 type AgentAction = { label: string; href: string; type: "primary" | "secondary" };
@@ -48,10 +49,10 @@ function requestId() {
 function detectAllIntents(text: string): AgentIntent[] {
   const t = (text || "").toLowerCase();
 
-  // Explicit OOS — return immediately with no other intents
+  // Truly off-topic — only block things that have nothing to do with cars/driving
   if (
-    ["visa", "job", "health", "bitcoin", "immigration", "loan", "finance"].some((k) =>
-      t.includes(k)
+    ["visa", "bitcoin", "immigration", "cryptocurrency", "recipe", "cooking", "football result", "election"].some(
+      (k) => t.includes(k)
     )
   ) {
     return ["unknown_out_of_scope"];
@@ -59,15 +60,18 @@ function detectAllIntents(text: string): AgentIntent[] {
 
   const found: AgentIntent[] = [];
 
-  // EV intent (postcode OR ev keywords)
+  // EV CHARGING (location-based) — requires charging infrastructure keywords OR postcode/location
+  // Deliberately excludes bare "\bev\b" so general EV questions route to general_car_advice
   const hasPostcode = /\b([a-z]{1,2}\d[a-z\d]?\s*\d[a-z]{2})\b/i.test(text || "");
-  const evKeywords =
-    /(charger|charging|\bev\b|station|type\s*2|ccs|chademo|rapid|fast\s*charge)/i.test(text || "");
-  if (evKeywords || hasPostcode) {
+  const evChargingKeywords =
+    /(charger[s]?|charging\s*(?:station[s]?|point[s]?|near|in|at|around)|station[s]?\s*(?:near|in|at|around)|\bev\b\s*(?:near|in|at|around|charger|station)|type\s*2|ccs\b|chademo|rapid\s*charger|fast\s*charge|pod\s*point|bp\s*pulse)/i.test(
+      text || ""
+    );
+  if (hasPostcode || evChargingKeywords) {
     found.push("ev_charging_readiness");
   }
 
-  // Roadside advice intent
+  // ROADSIDE ADVICE
   const roadsideKeywords =
     /(burst.*tyre|tyre.*burst|flat\s*tyre|tyre.*flat|puncture|blowout|warning\s*light|dashboard\s*light|check\s*engine\s*light|breakdown|broken\s*down|stranded|engine.*overheat|overheating|oil\s*pressure|jump\s*start|spare\s*tyre|coolant\s*leak|radiator\s*leak)/i.test(
       text || ""
@@ -76,26 +80,27 @@ function detectAllIntents(text: string): AgentIntent[] {
     found.push("roadside_advice");
   }
 
-  // Used-car intent (intentionally out-of-scope for canonical MOT endpoint)
-  if (
-    ["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) =>
-      t.includes(k)
-    )
-  ) {
-    found.push("used_car_buyer");
-  }
-
-  // MOT intent — explicit VRM, "mot" keyword, or age/mileage signals
+  // MOT WITH VRM — full layered analysis (requires API)
   const hasVRM = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i.test(text || "");
-  const motKeywords = /\b(mot|roadworthy|advisory|defect|fail|pass)\b/i.test(t);
   const ageOrMileage = extractAgeYears(text) !== null || extractMileage(text) !== null;
-  if (hasVRM || motKeywords || ageOrMileage) {
+  if (hasVRM || ageOrMileage) {
     found.push("mot_preparation");
   }
 
-  // Default fallback: if nothing matched, classify as MOT (preserves original behaviour)
+  // GENERAL CAR ADVICE — covers used-car buying, maintenance, MOT advice, EV advice, car value
+  // Anything car/vehicle/driving related that doesn't need live API data
+  const generalCarKeywords =
+    /(buy(?:ing)?|worth\s*buy|second[\s\-]?hand|used\s*car|pre[\s\-]?owned|hpi|cat\s*[sn]\b|v5\s*log|engine\s*light|check\s*engine|\bcel\b|oil\s*(?:change|level|type|grade)|change.*oil|\boil\b|service\s*(?:due|interval|history|light)?|servic(?:e|ing)\s*my|cambelt|timing\s*(?:belt|chain)|water\s*pump|grinding|squealing|squeaking|judder|knock(?:ing)?|rattl|clunk|vibrat|emission\w*|\bdpf\b|\begr\b|lambda|catalyst|mot\s*(?:fail|cost|price|test|prep|check|pass|history|expir)|how\s+much.*mot|pre[\s\-]?mot|before.*mot|switch.*(?:ev|electric)|should.*(?:ev|electric|\bev\b)|ev\s*(?:battery|range|car|advice|pros|cons)|\bev\b|electric\s*(?:car|vehicle|range|motoring)|range\s*anxiety|best\s*ev|cheap\s*ev|affordable\s*ev|depreciation|resale|sell.*car|best\s*time.*sell|car\s*value|brake\s*(?:pad|disc|fluid|noise|wear)|tyre\s*(?:pressure|wear|change|check)|clutch\b|gearbox|coolant|antifreeze|battery\s*(?:flat|drain|dead)|\baltermator\b|alternator|high\s*mileage|low\s*mileage|\bdiesel\b|\bpetrol\b|\bhybrid\b|car\s*maintenance|when.*service|how\s*often|worth\s*buy|is\s*it\s*worth|should\s*i\s*(?:buy|switch|get|fix)|noise.*(?:car|engine|brake|wheel)|what\s*causes|how\s*long.*(?:tyre|battery|clutch|brake|service)|reliable.*car|car.*reliable)/i.test(
+      text || ""
+    );
+  if (generalCarKeywords) {
+    found.push("general_car_advice");
+  }
+
+  // Default fallback: if nothing specific matched, use general_car_advice
+  // (better UX than asking for a VRM for every unknown car query)
   if (!found.length) {
-    return ["mot_preparation"];
+    return ["general_car_advice"];
   }
 
   return found;
@@ -1404,9 +1409,12 @@ function makeOOS(id: string, tool_calls: AgentResponse["meta"]["tool_calls"]): A
     status: "out_of_scope",
     intent: "unknown_out_of_scope",
     sections: {
-      understanding: "This request is outside the current Autodun AI Assistant scope.",
-      analysis: ["Supported workflow here: MOT Intelligence (Layered).", "Try: “MOT for ML58FOU”."],
-      recommended_next_step: "Send your VRM (example: ML58FOU) to generate MOT Intelligence.",
+      understanding: "That topic is outside Autodun AI's scope.",
+      analysis: [
+        "Autodun AI covers: MOT checks, used car buying, car maintenance, EV advice, roadside guidance, and car value.",
+        "Try asking: \"What causes MOT failures?\", \"Should I switch to an EV?\", or share your VRM for a full MOT report.",
+      ],
+      recommended_next_step: "Ask any car, MOT, or driving question and I'll help.",
     },
     actions: [
       { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
@@ -1577,6 +1585,356 @@ function makeRoadsideAdvice(
 }
 
 /* =======================
+   General Car Advice
+======================= */
+
+function makeGeneralCarAdvice(
+  text: string,
+  id: string,
+  tool_calls: AgentResponse["meta"]["tool_calls"]
+): AgentResponse {
+  const t = (text || "").toLowerCase();
+  const analysis: string[] = [];
+  let understanding = "Car advice query.";
+  let recommendedNextStep =
+    "For a full vehicle history and MOT risk report, visit mot.autodun.com.";
+  const actions: AgentAction[] = [
+    { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+    { label: "Open EV Finder", href: "https://ev.autodun.com/", type: "secondary" },
+  ];
+
+  // ── Used car buying ────────────────────────────────────────────────────
+  if (/(buy(?:ing)?|worth\s*buy|second[\s\-]?hand|used\s*car|pre[\s\-]?owned|hpi|cat\s*[sn]\b|v5\s*log)/i.test(t)) {
+    understanding = "Used car buying advice.";
+    const motFailMatch = text.match(/(\d+)\s*(?:mot\s*)?fail/i);
+    const motFails = motFailMatch ? parseInt(motFailMatch[1], 10) : null;
+
+    if (motFails !== null) {
+      analysis.push(
+        `${motFails} MOT ${motFails === 1 ? "failure" : "failures"} in the history:`,
+        motFails >= 3
+          ? "• 3+ failures is a significant red flag — recurring issues suggest chronic problems"
+          : motFails === 2
+          ? "• 2 failures is a caution flag — ask what failed and whether repairs were done properly"
+          : "• 1 failure can be normal; ask what was repaired and get receipts",
+        "• Check whether the same items kept failing (suspension, brakes, emissions = expensive)"
+      );
+    }
+    analysis.push(
+      "BEFORE BUYING ANY USED CAR — checklist:",
+      "• Full MOT history — look for patterns, advisories, repeat failures (free at check.mot.gov.uk)",
+      "• HPI check (~£20) — confirms no outstanding finance, not stolen, not a write-off",
+      "• V5 logbook — verify keeper count, VIN, and colour match the car",
+      "• Service history — FSH (full service history) is always worth paying a premium for",
+      "• Pre-purchase inspection — a mobile mechanic inspection costs £100–200 and can save thousands",
+      "• Test drive — listen for knocking, grinding, hesitation; check all electrics and air con",
+      "UK NEGOTIATION:",
+      "• Any MOT advisories = instant bargaining chips",
+      "• 3+ MOT failures = negotiate £500–2,000 below asking depending on the issues",
+      "• Check the MOT expiry date — imminent MOT = potential upcoming repair costs"
+    );
+    recommendedNextStep =
+      "Run the VRM on our MOT Predictor for a full history and risk score before you buy.";
+
+  // ── Engine light ───────────────────────────────────────────────────────
+  } else if (/(engine\s*light|check\s*engine|\bcel\b)/i.test(t)) {
+    understanding = "Engine warning light advice.";
+    analysis.push(
+      "ENGINE WARNING LIGHT — what it means:",
+      "• Solid amber = issue detected, book a diagnostic scan soon (do not ignore)",
+      "• Flashing amber = active misfire — reduce speed, avoid high revs, book urgently",
+      "• Red engine light = stop safely, switch off, do not continue driving",
+      "MOST COMMON CAUSES (DVSA data):",
+      "• Loose/damaged fuel filler cap — check and tighten first (free fix)",
+      "• Faulty oxygen (lambda) sensor — £100–300",
+      "• Catalytic converter fault — £200–800",
+      "• EGR valve (diesels especially) — £150–600",
+      "• DPF blockage (diesel) — £100–300 for clean; £400–1,500 for replacement",
+      "• Spark plugs / ignition coils — £80–250",
+      "WHAT TO DO:",
+      "• Get a diagnostic scan — most garages offer it for £40–60 or free with a repair booking",
+      "• Do NOT clear the code without fixing the cause — it will return",
+      "• If the light is flashing, do not drive at high revs; book same day"
+    );
+    recommendedNextStep = "Book a diagnostic scan — most garages can do same-day.";
+    actions[0] = { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" };
+
+  // ── Car noises ─────────────────────────────────────────────────────────
+  } else if (/(grinding|squealing|squeaking|judder|knock(?:ing)?|rattl|clunk|vibrat|noise)/i.test(t)) {
+    understanding = "Car noise or vibration.";
+    if (/grind/i.test(t)) {
+      analysis.push(
+        "GRINDING NOISE — likely causes:",
+        "• When braking: worn brake pads grinding on disc — URGENT, book immediately (£150–400)",
+        "• When turning: worn CV joint or wheel bearing — book within 1 week (£200–500)",
+        "• Continuous from engine bay: failing alternator, power steering pump, or AC compressor",
+        "URGENCY: Grinding brakes are a safety issue — risk of brake failure. Do not delay."
+      );
+    } else if (/squeal|squeak/i.test(t)) {
+      analysis.push(
+        "SQUEALING / SQUEAKING — likely causes:",
+        "• High-pitched squeal when braking: wear indicator telling you pads need replacing (£100–300)",
+        "• Constant belt squeal from engine bay: drive belt slipping or worn (£80–200)",
+        "• Squeak over bumps: worn suspension bushes or anti-roll drop links (£100–400)",
+        "• Tyre squeal cornering: underinflated or worn tyres — check pressures first (free)"
+      );
+    } else if (/knock/i.test(t)) {
+      analysis.push(
+        "KNOCKING NOISE — likely causes:",
+        "• Engine knock on acceleration: low oil pressure or worn bearings — STOP, check oil level now",
+        "• Knock over bumps (suspension): worn ball joints, bushes, or drop links (£150–600)",
+        "• Knock when turning: CV joint fault (£200–500) — book within 1–2 weeks"
+      );
+    } else if (/vibrat|judder/i.test(t)) {
+      analysis.push(
+        "VIBRATION / JUDDERING — likely causes:",
+        "• When braking: warped brake discs — (£200–400 to replace)",
+        "• At speed: wheel balancing or buckled wheel (£20–80 to balance)",
+        "• Under acceleration: worn driveshaft CV joint (£200–500)",
+        "• Through steering wheel: wheel alignment or loose wheel (£50 for alignment)"
+      );
+    } else {
+      analysis.push(
+        "UNUSUAL CAR NOISE — quick guide:",
+        "• Grinding (brakes/turning): worn brakes or bearings — URGENT",
+        "• Squealing: brake wear indicator or slipping belt — book soon",
+        "• Knocking: engine/suspension issue — check oil, book inspection",
+        "• Rattling: often loose heat shield or exhaust — typically minor",
+        "• Clunking over bumps: anti-roll bar drop links (£80–300) — book soon",
+        "Rule: any new persistent noise that gets worse = book an inspection promptly"
+      );
+    }
+    recommendedNextStep = "Book a garage inspection — noises get more expensive the longer they are left.";
+
+  // ── MOT general advice ─────────────────────────────────────────────────
+  } else if (/(mot|roadworthy|advisory|defect)/i.test(t)) {
+    understanding = "MOT advice.";
+    if (/(cost|price|how\s*much)/i.test(t)) {
+      analysis.push(
+        "MOT COST IN THE UK (2026):",
+        "• Government maximum fee: £54.85 for cars — no garage can legally charge more",
+        "• Typical market price: £30–55 depending on garage and location",
+        "• TIP: independent garages usually charge £30–45; dealers charge closer to the maximum",
+        "• Free re-test: most garages offer a free re-test within 10 working days for items that failed",
+        "• Book early — prices are often lower for off-peak slots (midweek mornings)"
+      );
+    } else if (/(emission|exhaust|smoke|dpf|diesel)/i.test(t)) {
+      analysis.push(
+        "MOT EMISSIONS FAILURE:",
+        "PETROL: high CO or HC = unburnt fuel.",
+        "• Causes: faulty lambda sensor, worn spark plugs, failing catalytic converter",
+        "• Fix cost: plugs £80–150; lambda sensor £100–300; catalyst £200–800",
+        "DIESEL: opacity (smoke) test failure.",
+        "• Causes: blocked DPF, EGR fault, worn injectors",
+        "• DPF clean: £100–300. DPF replacement: £400–1,500",
+        "• EGR valve: £150–600",
+        "TIP: warm the car fully before the MOT — a cold catalytic converter fails more easily"
+      );
+    } else if (/(fail|cause|common|what)/i.test(t)) {
+      analysis.push(
+        "MOST COMMON MOT FAILURE REASONS (DVSA data):",
+        "1. Lights — blown bulbs, alignment, wiring (£5–50 to fix yourself)",
+        "2. Suspension — worn bushes, ball joints, shock absorbers (£150–800)",
+        "3. Brakes — worn pads/discs or hydraulic issue (£100–500)",
+        "4. Tyres — below 1.6mm tread, sidewall damage (£80–400)",
+        "5. Driver's view — windscreen cracks, worn wipers (£5–400)",
+        "6. Emissions — especially older diesels (£100–1,500)",
+        "7. Steering — excessive play (£100–600)",
+        "PRE-MOT TIP: fix lights and tyres yourself before the test — cheapest items, biggest failure sources"
+      );
+    } else {
+      analysis.push(
+        "MOT — UK ESSENTIALS:",
+        "• Required every year for cars over 3 years old",
+        "• Tests: lights, brakes, steering, suspension, tyres, seatbelts, emissions, bodywork",
+        "• Maximum fee: £54.85 (most charge £30–55)",
+        "• Advisory = watch item, not yet a failure — fix before next MOT",
+        "• PRE-MOT CHECKLIST: all lights working, tyres ≥1.6mm tread, no dashboard warning lights, windscreen clear",
+        "• Check your full MOT history and upcoming risk at mot.autodun.com"
+      );
+    }
+    recommendedNextStep =
+      "Run your VRM on our MOT Predictor for a full failure risk assessment.";
+
+  // ── Maintenance & service ──────────────────────────────────────────────
+  } else if (/(service|cambelt|timing\s*(?:belt|chain)|oil\s*change|change.*oil|\boil\b|coolant|antifreeze|how\s*often|service\s*interval)/i.test(t)) {
+    understanding = "Car maintenance advice.";
+    if (/cambelt|timing\s*belt/i.test(t)) {
+      analysis.push(
+        "CAMBELT / TIMING BELT — critical service:",
+        "• If the cambelt snaps while driving, the engine is usually destroyed (£3,000–5,000+ to rebuild)",
+        "• Change interval: typically every 60,000–80,000 miles OR 5–8 years (whichever comes first)",
+        "• Always replace the water pump at the same time — same labour cost, prevents a second job",
+        "• Timing CHAINS are designed to last the engine life but can rattle on startup when worn",
+        "COST: cambelt + water pump kit + labour = £400–800 (money very well spent)",
+        "CHECK: search '[your make] [model] cambelt interval' for your exact schedule"
+      );
+    } else if (/oil/i.test(t)) {
+      analysis.push(
+        "ENGINE OIL — UK GUIDE:",
+        "• Change interval: every 12 months or 10,000–12,000 miles (synthetic), 6,000 miles (older/high-mileage)",
+        "• Check level: dipstick monthly, between MIN and MAX marks when engine is cold on level ground",
+        "• Oil grade: use the exact grade in your owner's manual (e.g. 5W-30) — wrong grade damages seals",
+        "• Low oil warning light: top up immediately and check for leaks",
+        "• Cost: DIY oil change £30–60 in parts; garage service £80–200"
+      );
+    } else if (/service/i.test(t)) {
+      analysis.push(
+        "SERVICE INTERVALS — UK GUIDE:",
+        "• Interim service (6 months / 6,000 miles): oil, oil filter, safety inspection — £80–150",
+        "• Full service (12 months / 12,000 miles): + air filter, spark plugs, fuel filter, brake fluid — £150–300",
+        "• Major service (24,000–36,000 miles): + cambelt, coolant, gearbox oil — £300–600",
+        "TIP: use an independent VAT-registered garage — same quality as a dealer at 30–50% lower cost",
+        "TIP: keeping a full service history (FSH) adds £500–2,000 to resale value"
+      );
+    } else {
+      analysis.push(
+        "KEY MAINTENANCE SCHEDULE (UK):",
+        "• Engine oil: every 12 months or 10,000–12,000 miles",
+        "• Brake fluid: every 2 years regardless of mileage",
+        "• Coolant/antifreeze: every 5 years",
+        "• Spark plugs: every 40,000 miles (standard) / 80,000 miles (iridium)",
+        "• Cambelt: 60,000–80,000 miles or 5–8 years — CRITICAL",
+        "• Air filter: every 20,000 miles or 2 years",
+        "• Tyres: replace when tread reaches 3mm (legal minimum 1.6mm — fine + 3 points per tyre)"
+      );
+    }
+    recommendedNextStep = "Share your VRM for a personalised MOT risk report at mot.autodun.com.";
+
+  // ── EV general questions ───────────────────────────────────────────────
+  } else if (/(switch.*(?:ev|electric)|should.*ev|\bev\b|electric\s*(?:car|vehicle)|ev\s*(?:battery|range|pros|cons)|range\s*anxiety|best\s*ev|cheap\s*ev)/i.test(t)) {
+    understanding = "EV advice.";
+    if (/(switch|should|worth)/i.test(t)) {
+      analysis.push(
+        "SHOULD I SWITCH TO AN EV? — UK HONEST GUIDE:",
+        "SWITCH IF:",
+        "• You have off-street parking (home charging is 3–5p/mile vs 40–60p/mile on rapid chargers)",
+        "• Your daily driving is mostly under 150 miles",
+        "• You qualify for workplace charging or cheap off-peak electricity (Economy 7/10)",
+        "• You're a company car user — EVs have 2% BIK vs 30–37% for petrol/diesel",
+        "WAIT IF:",
+        "• You have no off-street parking and would rely entirely on public charging",
+        "• You regularly do 300+ miles per day without charging options",
+        "• You're buying a used EV without a battery health report",
+        "UK CONTEXT:",
+        "• No VED (road tax) for zero-emission cars",
+        "• Running cost: ~3–5p/mile (home) vs ~12–18p/mile (petrol/diesel)",
+        "• 60,000+ public charge points across the UK as of 2026",
+        "VERDICT: for most UK urban/suburban drivers with home charging, EVs now make financial sense"
+      );
+    } else if (/(battery|range|anxiety|long|last)/i.test(t)) {
+      analysis.push(
+        "EV BATTERY & RANGE — UK GUIDE:",
+        "• Battery lifespan: 10–15+ years in typical use; most EVs have 8-year / 100,000-mile warranty",
+        "• Degradation: ~2–3% per year on average — a 5-year-old EV typically has 85–90% battery health",
+        "• MAXIMISE RANGE:",
+        "  - Charge to 80% daily (charge to 100% only before long journeys)",
+        "  - Drive at 60–65mph on motorways (aerodynamic drag rises sharply above 70mph)",
+        "  - Pre-condition the cabin while plugged in — saves battery energy",
+        "• Home 7kW wallbox: ~30 miles of range per hour of charging",
+        "• Public 50kW rapid: 80% charge in ~45–60 min depending on the car",
+        "• Motorway 150kW ultra-rapid: 80% in ~20–30 min",
+        "RANGE ANXIETY TIP: use Zap-Map (free app) to plan route charging in advance"
+      );
+    } else {
+      analysis.push(
+        "EV — UK OVERVIEW:",
+        "• Running costs: ~3–5p/mile home-charged vs ~12–18p/mile for petrol/diesel",
+        "• Lower servicing: no oil changes, regenerative braking reduces brake wear",
+        "• Insurance: currently 10–20% higher than equivalent ICE — shop around",
+        "• Charging network: 60,000+ public points across the UK (2026)",
+        "• Best use case: regular urban/suburban driving with home charging",
+        "• Depreciation: currently higher than petrol equivalents — buy nearly-new over brand new",
+        "Use our EV Finder to locate chargers near you."
+      );
+    }
+    recommendedNextStep = "Find EV chargers near you at ev.autodun.com.";
+    actions[0] = { label: "Open EV Finder", href: "https://ev.autodun.com/", type: "primary" };
+    actions[1] = { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" };
+
+  // ── Car value & depreciation ───────────────────────────────────────────
+  } else if (/(sell|depreciation|resale|car\s*value|best\s*time.*sell|colour.*(?:resale|value)|when.*sell)/i.test(t)) {
+    understanding = "Car value and depreciation advice.";
+    analysis.push(
+      "WHEN IS THE BEST TIME TO SELL?",
+      "• Spring/early summer: highest demand, best prices — avoid December/January",
+      "• Before an expensive MOT or service becomes due (be transparent about it)",
+      "• Before the car crosses 60,000 miles — values drop more sharply above this threshold",
+      "• Just after a fresh MOT — buyers pay a premium for 12 months' peace of mind",
+      "DEPRECIATION FACTS (UK):",
+      "• Typical new car loses 15–35% in year 1, ~50% by year 3",
+      "• Slowest-depreciating brands: Toyota, Suzuki, Mazda, Land Rover (Defender)",
+      "• Fastest: luxury German cars on finance, some French/American models",
+      "• EVs: currently depreciating faster than petrol equivalents (market uncertainty)",
+      "COLOUR & RESALE VALUE:",
+      "• Best colours: white, black, silver, grey — 90%+ of buyers accept these",
+      "• Avoid unusual colours (yellow, orange, bright green) — 15–25% harder to sell",
+      "• Red/blue: fine for hot hatches, risky for family cars",
+      "WHERE TO SELL:",
+      "• AutoTrader / Facebook Marketplace: best price, most effort",
+      "• Part-exchange at dealer: convenient, typically £500–2,000 below market",
+      "• Motorway / We Buy Any Car: quick, competitive offers for older/higher-mileage cars"
+    );
+    recommendedNextStep =
+      "Check your car's MOT history to present a clean record to buyers at mot.autodun.com.";
+
+  // ── Diesel/petrol/hybrid general ───────────────────────────────────────
+  } else if (/(diesel|petrol|hybrid)/i.test(t)) {
+    understanding = "Fuel type advice.";
+    analysis.push(
+      "PETROL vs DIESEL vs HYBRID — UK GUIDE:",
+      "PETROL:",
+      "• Best for: under 12,000 miles/year, mainly urban/short trips",
+      "• Cheaper to buy and service; no DPF issues",
+      "• Less fuel-efficient on motorways than diesel",
+      "DIESEL:",
+      "• Best for: 15,000+ miles/year with regular long journeys (motorway use keeps DPF clear)",
+      "• Avoid if: mostly short urban trips — DPF blockage is very common (£400–1,500 to fix)",
+      "• Low Emission Zones: diesel cars pre-Euro 6 face charges in many UK cities",
+      "HYBRID (MHBS / FULL HYBRID):",
+      "• Full hybrid (Toyota, Honda): great for urban, no plug required, lowest running cost for city driving",
+      "• Plug-in hybrid (PHEV): good if you can charge at home and do mostly short trips",
+      "• Mild hybrid: very minor benefit — mainly reduces strain on the engine",
+      "VERDICT: Diesel is increasingly risky for UK city drivers due to ULEZ/LEZ charges. Hybrid is the safest all-round choice for mixed driving."
+    );
+    recommendedNextStep = "Check your car's MOT history and emissions compliance at mot.autodun.com.";
+
+  // ── Generic car advice fallback ────────────────────────────────────────
+  } else {
+    understanding = "General vehicle query.";
+    analysis.push(
+      "I'm here to help with any car or vehicle question. Topics I cover:",
+      "• MOT preparation — what fails, how much it costs, how to prepare",
+      "• Used car buying — what to check, HPI, MOT history, negotiation",
+      "• Car maintenance — oil changes, service intervals, cambelt, tyres",
+      "• Warning lights and noises — causes, urgency, estimated costs",
+      "• EV switching advice — is it right for you, range, charging costs",
+      "• Car value & depreciation — when to sell, best colours, where to sell",
+      "Share more detail about your specific situation and I'll give you practical advice."
+    );
+    recommendedNextStep =
+      "Ask a specific question or share your VRM for a full MOT intelligence report.";
+  }
+
+  return {
+    status: "ok",
+    intent: "general_car_advice",
+    sections: {
+      understanding,
+      analysis,
+      recommended_next_step: recommendedNextStep,
+    },
+    actions,
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["general_car_advice"],
+    },
+  };
+}
+
+/* =======================
    Multi-Intent Combiner
 ======================= */
 
@@ -1591,6 +1949,7 @@ function combineMultiIntentResponses(
     if (i === "ev_charging_readiness") return "EV Charging";
     if (i === "mot_preparation") return "MOT Intelligence";
     if (i === "roadside_advice") return "Roadside Advice";
+    if (i === "general_car_advice") return "Car Advice";
     if (i === "used_car_buyer") return "Used Car";
     return "Analysis";
   };
@@ -1698,8 +2057,17 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
       return res.status(200).json(makeRoadsideAdvice(text, id, tool_calls));
     }
 
-    if (intent !== "mot_preparation") {
+    if (intent === "general_car_advice") {
+      return res.status(200).json(makeGeneralCarAdvice(text, id, tool_calls));
+    }
+
+    if (intent === "unknown_out_of_scope") {
       return res.status(200).json(makeOOS(id, tool_calls));
+    }
+
+    if (intent !== "mot_preparation") {
+      // used_car_buyer and any other unhandled intent → general car advice
+      return res.status(200).json(makeGeneralCarAdvice(text, id, tool_calls));
     }
 
     if (text.length < 2 || text.length > 800) {
@@ -1716,7 +2084,8 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
         return res.status(200).json(makeMotChecklistFallback(id, tool_calls, age, miles));
       }
 
-      return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+      // No VRM and no age/mileage — answer as a general car question rather than asking for VRM
+      return res.status(200).json(makeGeneralCarAdvice(text, id, tool_calls));
     }
 
     try {
@@ -1859,8 +2228,12 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
         }
       }
       combinedToolCalls.push(...motTc);
+
+    } else if (intent === "general_car_advice") {
+      const gcTc: AgentResponse["meta"]["tool_calls"] = [];
+      responses.push(makeGeneralCarAdvice(text, id, gcTc));
     }
-    // used_car_buyer / unknown_out_of_scope: not included in combined output
+    // unknown_out_of_scope / used_car_buyer: not included in combined output
   }
 
   if (!responses.length) {
