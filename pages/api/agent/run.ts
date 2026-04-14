@@ -15,6 +15,7 @@ type AgentIntent =
   | "mot_preparation"
   | "ev_charging_readiness"
   | "used_car_buyer"
+  | "roadside_advice"
   | "unknown_out_of_scope";
 
 type AgentAction = { label: string; href: string; type: "primary" | "secondary" };
@@ -44,37 +45,60 @@ function requestId() {
    Intent Classification
 ======================= */
 
-function classifyIntent(text: string): AgentIntent {
+function detectAllIntents(text: string): AgentIntent[] {
   const t = (text || "").toLowerCase();
 
-  // Explicit OOS
+  // Explicit OOS — return immediately with no other intents
   if (
     ["visa", "job", "health", "bitcoin", "immigration", "loan", "finance"].some((k) =>
       t.includes(k)
     )
   ) {
-    return "unknown_out_of_scope";
+    return ["unknown_out_of_scope"];
   }
 
-  // ✅ EV intent
+  const found: AgentIntent[] = [];
+
+  // EV intent (postcode OR ev keywords)
   const hasPostcode = /\b([a-z]{1,2}\d[a-z\d]?\s*\d[a-z]{2})\b/i.test(text || "");
   const evKeywords =
-    /(charger|charging|ev|station|type\s*2|ccs|chademo|rapid|fast\s*charge)/i.test(text || "");
+    /(charger|charging|\bev\b|station|type\s*2|ccs|chademo|rapid|fast\s*charge)/i.test(text || "");
   if (evKeywords || hasPostcode) {
-    return "ev_charging_readiness";
+    found.push("ev_charging_readiness");
   }
 
-  // Used-car intent (intentionally out-of-scope for this canonical MOT endpoint)
+  // Roadside advice intent
+  const roadsideKeywords =
+    /(burst.*tyre|tyre.*burst|flat\s*tyre|tyre.*flat|puncture|blowout|warning\s*light|dashboard\s*light|check\s*engine\s*light|breakdown|broken\s*down|stranded|engine.*overheat|overheating|oil\s*pressure|jump\s*start|spare\s*tyre|coolant\s*leak|radiator\s*leak)/i.test(
+      text || ""
+    );
+  if (roadsideKeywords) {
+    found.push("roadside_advice");
+  }
+
+  // Used-car intent (intentionally out-of-scope for canonical MOT endpoint)
   if (
     ["buy", "buying", "used", "second hand", "v5", "hpi", "cat s", "cat n"].some((k) =>
       t.includes(k)
     )
   ) {
-    return "used_car_buyer";
+    found.push("used_car_buyer");
   }
 
-  // Default to MOT
-  return "mot_preparation";
+  // MOT intent — explicit VRM, "mot" keyword, or age/mileage signals
+  const hasVRM = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i.test(text || "");
+  const motKeywords = /\b(mot|roadworthy|advisory|defect|fail|pass)\b/i.test(t);
+  const ageOrMileage = extractAgeYears(text) !== null || extractMileage(text) !== null;
+  if (hasVRM || motKeywords || ageOrMileage) {
+    found.push("mot_preparation");
+  }
+
+  // Default fallback: if nothing matched, classify as MOT (preserves original behaviour)
+  if (!found.length) {
+    return ["mot_preparation"];
+  }
+
+  return found;
 }
 
 /* =======================
@@ -113,17 +137,52 @@ function extractPlaceName(text: string): string | null {
   const t = (text || "").trim();
   if (!t) return null;
 
-  // If there's already a postcode, prefer postcode flow.
+  // Postcode takes priority
   if (extractPostcode(t)) return null;
 
-  const m = t.match(/\b(?:near|in|around)\s+([A-Za-z][A-Za-z\s\-']{2,50})/i);
-  const raw = (m?.[1] || "").trim();
-  if (!raw) return null;
+  // Pattern 1: explicit preposition + place name (extended list)
+  const m1 = t.match(
+    /\b(?:near|in|around|at|by|close\s+to|within|for)\s+([A-Za-z][A-Za-z\s\-']{2,50})/i
+  );
+  if (m1) {
+    const cleaned = (m1[1] || "").trim().split(/[.,;:!?]/)[0].trim();
+    if (cleaned.length >= 2 && cleaned.length <= 50) return cleaned;
+  }
 
-  const cleaned = raw.split(/[.,;:!?]/)[0].trim();
-  if (cleaned.length < 2 || cleaned.length > 50) return null;
+  // Pattern 2: "chargers/charging/stations PlaceName" (place name after EV service noun)
+  // e.g. "EV chargers Ilford", "charging stations Manchester"
+  const m2 = t.match(
+    /\b(?:charger[s]?|charging|station[s]?|point[s]?)\s+([A-Za-z][A-Za-z\s\-']{2,40}?)(?:\s*$|\s*[?!.,])/i
+  );
+  if (m2) {
+    const candidate = (m2[1] || "").trim();
+    const notAPlace =
+      /^(near|in|at|by|around|for|rapid|fast|slow|free|paid|nearby|local|available|open)\s*$/i;
+    if (!notAPlace.test(candidate) && candidate.length >= 3) return candidate;
+  }
 
-  return cleaned;
+  // Pattern 3: "PlaceName chargers/charging/ev" (place name before EV keyword)
+  // e.g. "Manchester charging stations", "Ilford EV chargers"
+  const m3 = t.match(
+    /^([A-Za-z][A-Za-z\s\-']{2,40}?)\s+(?:charger[s]?|charging|station[s]?|\bev\b|electric)/i
+  );
+  if (m3) {
+    const candidate = (m3[1] || "").trim();
+    const notAPlace =
+      /^(find|show|list|get|check|any|some|the|an?|nearby|local|rapid|fast)\s*$/i;
+    if (!notAPlace.test(candidate) && candidate.length >= 3) return candidate;
+  }
+
+  // Pattern 4: short text (≤ 3 words) that looks like a standalone UK place name
+  // e.g. "Ilford", "East London", "central Birmingham"
+  const wordCount = t.split(/\s+/).length;
+  if (wordCount <= 3 && /^[A-Za-z][A-Za-z\s\-']+$/.test(t)) {
+    const notAPlace =
+      /\b(charger|charging|ev|electric|mot|buy|sell|help|find|show|check|please|can|what|where|how|is|are|the|a|an)\b/i;
+    if (!notAPlace.test(t) && t.length >= 3) return t;
+  }
+
+  return null;
 }
 
 /* =======================
@@ -1341,6 +1400,196 @@ function makeNeedsClarification(
 }
 
 /* =======================
+   Roadside Advice
+======================= */
+
+function makeRoadsideAdvice(
+  text: string,
+  id: string,
+  tool_calls: AgentResponse["meta"]["tool_calls"]
+): AgentResponse {
+  const analysis: string[] = [];
+  let understanding = "Roadside situation detected.";
+  const recommendedNextStep =
+    "If unsafe: hazards on, pull over, call 999 (danger) or your breakdown cover.";
+
+  if (/(burst.*tyre|tyre.*burst|flat.*tyre|tyre.*flat|puncture|blowout)/i.test(text)) {
+    understanding = "Burst or flat tyre.";
+    analysis.push(
+      "BURST / FLAT TYRE — immediate steps:",
+      "• Do NOT brake hard — ease off the accelerator and grip the wheel firmly",
+      "• Steer straight; let the car slow naturally, then brake gently",
+      "• Pull over at the next safe point — hard shoulder, lay-by, or side street",
+      "• Switch on hazard lights immediately",
+      "• Exit safely away from traffic; place warning triangle 45 m behind if safe",
+      "• Fit the spare tyre if confident — otherwise call breakdown cover",
+      "UK breakdown: AA 0800 887766 | RAC 0333 200 0999 | Green Flag 0800 00 1771",
+      "Legal note: minimum tyre tread depth in the UK is 1.6 mm (MOT failure + fine if below)"
+    );
+  } else if (
+    /(warning\s*light|dashboard\s*light|check\s*engine\s*light)/i.test(text)
+  ) {
+    understanding = "Dashboard warning light query.";
+    analysis.push(
+      "DASHBOARD WARNING LIGHTS — quick guide:",
+      "• Red oil can: STOP immediately — continuing risks catastrophic engine damage",
+      "• Red temperature gauge: STOP — engine overheating; do NOT open radiator cap when hot",
+      "• Red battery: stop when safe — alternator or battery fault; turn off all non-essentials",
+      "• Amber engine/ECU light: book a diagnostic scan soon; urgent if flashing",
+      "• Amber ABS light: ABS is disabled but brakes still work — get checked before MOT",
+      "• Amber airbag/SRS light: MOT failure if illuminated — book inspection",
+      "• TPMS (tyre pressure): check and inflate tyres to correct pressure (door-sill label)",
+      "Rule of thumb: Red = stop now. Amber = book soon. Green/Blue = informational."
+    );
+  } else if (
+    /(breakdown|broken\s*down|stranded|won.t\s*start|not\s*starting|engine.*(won.t|not))/i.test(
+      text
+    )
+  ) {
+    understanding = "Breakdown or engine not starting.";
+    analysis.push(
+      "BREAKDOWN — immediate steps:",
+      "• On motorway: pull onto hard shoulder, exit from passenger side, wait behind barrier",
+      "• Switch on hazards; place warning triangle 45 m behind (NOT on a motorway)",
+      "• Stay away from the vehicle if on a fast road",
+      "WON'T START — quick checklist:",
+      "• Battery flat? Check interior lights dim when turning key",
+      "• Fuel? Ensure the gauge is above reserve",
+      "• Immobiliser? Check key fob battery is not flat",
+      "UK breakdown: AA 0800 887766 | RAC 0333 200 0999 | Green Flag 0800 00 1771",
+      "Not a member? You can join on the spot (expect a higher call-out fee)."
+    );
+  } else if (/(overheating|overheat|coolant|radiator)/i.test(text)) {
+    understanding = "Engine overheating.";
+    analysis.push(
+      "ENGINE OVERHEATING — immediate steps:",
+      "• Stop as soon as safely possible — do NOT continue driving",
+      "• Turn off air conditioning; turn heater to full heat (draws heat away from engine)",
+      "• Let the engine cool for at least 30 minutes before touching the radiator cap",
+      "• NEVER open a hot radiator cap — risk of severe burns from pressurised boiling coolant",
+      "• When cool: check coolant level; top up with 50/50 antifreeze mix (water in an emergency)",
+      "Common causes: coolant leak, broken water pump, failed thermostat, blown head gasket",
+      "If coolant level is fine but car overheats repeatedly: book a cooling system check urgently"
+    );
+  } else if (/(oil\s*pressure|low\s*oil|oil\s*light)/i.test(text)) {
+    understanding = "Oil pressure warning.";
+    analysis.push(
+      "OIL PRESSURE WARNING — immediate steps:",
+      "• STOP the engine immediately — continuing risks catastrophic engine damage",
+      "• Pull over safely and switch off; wait 5 minutes",
+      "• Check oil level on the dipstick — if low, top up with the correct grade (owner's manual)",
+      "• If oil level is fine but the light remains on: do NOT restart — call breakdown",
+      "Note: the oil pressure warning light is NOT the same as the oil level light; both need prompt action"
+    );
+  } else if (/(jump\s*start|flat\s*battery|dead\s*battery)/i.test(text)) {
+    understanding = "Flat battery / jump start.";
+    analysis.push(
+      "JUMP START — step by step:",
+      "• Park the donor car nose-to-nose (or side by side) — engines off",
+      "• Red cable: positive (+) on flat battery, then positive (+) on donor battery",
+      "• Black cable: negative (-) on donor battery, then an unpainted metal earth on the flat car",
+      "• Start donor car; run for 2 minutes, then attempt to start the flat car",
+      "• If successful: keep engine running for 20–30 min to recharge",
+      "• Remove cables in reverse order (black earth first, then black donor, then reds)",
+      "Caution: never connect cables to an airbag or fuel system component — risk of fire"
+    );
+  } else {
+    // Generic roadside
+    understanding = "Roadside or driving situation detected.";
+    analysis.push(
+      "GENERAL ROADSIDE GUIDANCE:",
+      "• If unsafe at any point: hazards on, pull over, call 999 (danger) or breakdown cover",
+      "• Tyre problem: ease off accelerator, steer straight, pull over safely",
+      "• Warning lights: Red = stop now; Amber = book an inspection soon",
+      "• Breakdown: AA 0800 887766 | RAC 0333 200 0999 | Green Flag 0800 00 1771",
+      "• Overheating: stop, cool down 30 min, never open a hot radiator cap",
+      "Share more detail (e.g. 'burst tyre', 'engine warning light', 'broken down') for specific steps."
+    );
+  }
+
+  return {
+    status: "ok",
+    intent: "roadside_advice",
+    sections: {
+      understanding,
+      analysis,
+      recommended_next_step: recommendedNextStep,
+    },
+    actions: [
+      { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "primary" },
+      { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+    ],
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["roadside_intent", "roadside_advice"],
+    },
+  };
+}
+
+/* =======================
+   Multi-Intent Combiner
+======================= */
+
+function combineMultiIntentResponses(
+  responses: AgentResponse[],
+  id: string,
+  tool_calls: AgentResponse["meta"]["tool_calls"]
+): AgentResponse {
+  const primary = responses[0];
+
+  const intentLabel = (i: AgentIntent): string => {
+    if (i === "ev_charging_readiness") return "EV Charging";
+    if (i === "mot_preparation") return "MOT Intelligence";
+    if (i === "roadside_advice") return "Roadside Advice";
+    if (i === "used_car_buyer") return "Used Car";
+    return "Analysis";
+  };
+
+  const combinedAnalysis: string[] = [];
+  for (const r of responses) {
+    combinedAnalysis.push(`--- ${intentLabel(r.intent)} ---`);
+    combinedAnalysis.push(...r.sections.analysis);
+  }
+
+  const seenHrefs = new Set<string>();
+  const combinedActions: AgentAction[] = [];
+  for (const r of responses) {
+    for (const a of r.actions) {
+      if (!seenHrefs.has(a.href)) {
+        seenHrefs.add(a.href);
+        combinedActions.push(a);
+      }
+    }
+  }
+
+  const combinedNextStep = responses
+    .map((r) => r.sections.recommended_next_step)
+    .filter(Boolean)
+    .join(" | ");
+
+  const allLayers = responses.flatMap((r) => r.meta.layers ?? []);
+
+  return {
+    status: "ok",
+    intent: primary.intent,
+    sections: {
+      understanding: `Multiple topics detected — answering ${responses.length} queries below.`,
+      analysis: combinedAnalysis,
+      recommended_next_step: combinedNextStep,
+    },
+    actions: combinedActions.slice(0, 4),
+    meta: {
+      request_id: id,
+      tool_calls,
+      version: MOT_INTELLIGENCE_VERSION,
+      layers: ["multi_intent", ...allLayers],
+    },
+  };
+}
+
+/* =======================
    Handler
 ======================= */
 
@@ -1367,122 +1616,213 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     .toString()
     .trim();
 
-  const intent = classifyIntent(text);
+  const intents = detectAllIntents(text);
   const tool_calls: AgentResponse["meta"]["tool_calls"] = [];
 
-  if (intent === "ev_charging_readiness") {
+  // ── Single-intent fast path (existing behaviour preserved) ──────────────
+  if (intents.length === 1) {
+    const intent = intents[0];
+
+    if (intent === "ev_charging_readiness") {
+      try {
+        const out = await tool_get_ev_chargers_near_postcode(text, id, tool_calls);
+        return res.status(200).json(out);
+      } catch (e: any) {
+        const out: AgentResponse = {
+          status: "error",
+          intent,
+          sections: {
+            understanding: "Could not fetch EV chargers.",
+            analysis: [`Debug hint: ${String(e?.message || e || "unknown error")}`],
+            recommended_next_step: "Try again, or verify the EV stations feed is reachable.",
+          },
+          actions: [
+            { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+            { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+          ],
+          meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_error"] },
+        };
+        return res.status(200).json(out);
+      }
+    }
+
+    if (intent === "roadside_advice") {
+      return res.status(200).json(makeRoadsideAdvice(text, id, tool_calls));
+    }
+
+    if (intent !== "mot_preparation") {
+      return res.status(200).json(makeOOS(id, tool_calls));
+    }
+
+    if (text.length < 2 || text.length > 800) {
+      return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+    }
+
+    const vrm = extractVRM(text);
+
+    if (!vrm) {
+      const age = extractAgeYears(text);
+      const miles = extractMileage(text);
+
+      if (age !== null || miles !== null) {
+        return res.status(200).json(makeMotChecklistFallback(id, tool_calls, age, miles));
+      }
+
+      return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+    }
+
     try {
-      const out = await tool_get_ev_chargers_near_postcode(text, id, tool_calls);
+      const t0 = Date.now();
+      const intel = await tool_get_mot_intelligence_v3(vrm);
+      tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
+
+      const layer7 = buildLayer7({
+        vrm,
+        vehicle: { ageYears: intel.vehicle.ageYears, mileage: intel.vehicle.mileage },
+        risk: intel.risk,
+        readiness: intel.readiness,
+        timeline: intel.timeline,
+        cost: intel.cost,
+        ownership: intel.ownership,
+      });
+
+      const out: AgentResponse = {
+        status: "ok",
+        intent,
+        sections: {
+          understanding: `MOT Intelligence (Layers 1–7) for ${vrm}. ${layer7.headline}`,
+          analysis: [
+            ...layer7.summaryLines,
+            "Action plan:",
+            ...layer7.actionLines.map((x) => `• ${x}`),
+            ...(intel.cost.breakdown.length
+              ? ["Cost breakdown (Fix NOW items):", ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`)]
+              : []),
+          ],
+          recommended_next_step: layer7.recommendedNextStep,
+        },
+        actions: [
+          { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+        },
+      };
+
       return res.status(200).json(out);
     } catch (e: any) {
       const out: AgentResponse = {
         status: "error",
         intent,
         sections: {
-          understanding: "Could not fetch EV chargers.",
-          analysis: [`Debug hint: ${String(e?.message || e || "unknown error")}`],
-          recommended_next_step: "Try again, or verify the EV stations feed is reachable.",
+          understanding: "We could not complete MOT Intelligence.",
+          analysis: [
+            "A temporary error occurred while running the layered engine.",
+            `Debug hint: ${String(e?.message || e || "unknown error")}`,
+          ],
+          recommended_next_step:
+            "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
         },
         actions: [
-          { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
+          { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
           { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
         ],
-        meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_error"] },
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+        },
       };
       return res.status(200).json(out);
     }
   }
 
-  if (intent !== "mot_preparation") {
-    return res.status(200).json(makeOOS(id, tool_calls));
-  }
+  // ── Multi-intent path — run each workflow and combine ───────────────────
+  const responses: AgentResponse[] = [];
+  const combinedToolCalls: AgentResponse["meta"]["tool_calls"] = [];
 
-  if (text.length < 2 || text.length > 800) {
-    return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
-  }
+  for (const intent of intents) {
+    if (intent === "ev_charging_readiness") {
+      const evTc: AgentResponse["meta"]["tool_calls"] = [];
+      try {
+        const r = await tool_get_ev_chargers_near_postcode(text, id, evTc);
+        responses.push(r);
+      } catch { /* best-effort — skip failed EV lookup in multi-intent */ }
+      combinedToolCalls.push(...evTc);
 
-  const vrm = extractVRM(text);
+    } else if (intent === "roadside_advice") {
+      const rtTc: AgentResponse["meta"]["tool_calls"] = [];
+      responses.push(makeRoadsideAdvice(text, id, rtTc));
 
-  if (!vrm) {
-    const age = extractAgeYears(text);
-    const miles = extractMileage(text);
-
-    if (age !== null || miles !== null) {
-      return res.status(200).json(makeMotChecklistFallback(id, tool_calls, age, miles));
+    } else if (intent === "mot_preparation") {
+      const motTc: AgentResponse["meta"]["tool_calls"] = [];
+      const vrm = extractVRM(text);
+      if (vrm) {
+        try {
+          const t0 = Date.now();
+          const intel = await tool_get_mot_intelligence_v3(vrm);
+          motTc.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
+          const layer7 = buildLayer7({
+            vrm,
+            vehicle: { ageYears: intel.vehicle.ageYears, mileage: intel.vehicle.mileage },
+            risk: intel.risk,
+            readiness: intel.readiness,
+            timeline: intel.timeline,
+            cost: intel.cost,
+            ownership: intel.ownership,
+          });
+          responses.push({
+            status: "ok",
+            intent: "mot_preparation",
+            sections: {
+              understanding: `MOT Intelligence (Layers 1–7) for ${vrm}. ${layer7.headline}`,
+              analysis: [
+                ...layer7.summaryLines,
+                "Action plan:",
+                ...layer7.actionLines.map((x) => `• ${x}`),
+                ...(intel.cost.breakdown.length
+                  ? ["Cost breakdown (Fix NOW items):", ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`)]
+                  : []),
+              ],
+              recommended_next_step: layer7.recommendedNextStep,
+            },
+            actions: [
+              { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
+              { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+            ],
+            meta: {
+              request_id: id,
+              tool_calls: motTc,
+              version: MOT_INTELLIGENCE_VERSION,
+              layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
+            },
+          });
+        } catch { /* best-effort */ }
+      } else {
+        const age = extractAgeYears(text);
+        const miles = extractMileage(text);
+        if (age !== null || miles !== null) {
+          responses.push(makeMotChecklistFallback(id, motTc, age, miles));
+        }
+      }
+      combinedToolCalls.push(...motTc);
     }
-
-    return res.status(200).json(makeNeedsClarification(id, intent, tool_calls));
+    // used_car_buyer / unknown_out_of_scope: not included in combined output
   }
 
-  try {
-    const t0 = Date.now();
-    const intel = await tool_get_mot_intelligence_v3(vrm);
-    tool_calls.push({ name: "mot_history", ok: true, ms: Date.now() - t0 });
-
-    const layer7 = buildLayer7({
-      vrm,
-      vehicle: { ageYears: intel.vehicle.ageYears, mileage: intel.vehicle.mileage },
-      risk: intel.risk,
-      readiness: intel.readiness,
-      timeline: intel.timeline,
-      cost: intel.cost,
-      ownership: intel.ownership,
-    });
-
-    const out: AgentResponse = {
-      status: "ok",
-      intent,
-      sections: {
-        understanding: `MOT Intelligence (Layers 1–7) for ${vrm}. ${layer7.headline}`,
-        analysis: [
-          ...layer7.summaryLines,
-          "Action plan:",
-          ...layer7.actionLines.map((x) => `• ${x}`),
-          ...(intel.cost.breakdown.length
-            ? ["Cost breakdown (Fix NOW items):", ...intel.cost.breakdown.map((b) => `• ${b.theme}: ${b.range}`)]
-            : []),
-        ],
-        recommended_next_step: layer7.recommendedNextStep,
-      },
-      actions: [
-        { label: "Open MOT Predictor", href: `https://mot.autodun.com/?vrm=${encodeURIComponent(vrm)}`, type: "primary" },
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-      ],
-      meta: {
-        request_id: id,
-        tool_calls,
-        version: MOT_INTELLIGENCE_VERSION,
-        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
-      },
-    };
-
-    return res.status(200).json(out);
-  } catch (e: any) {
-    const out: AgentResponse = {
-      status: "error",
-      intent,
-      sections: {
-        understanding: "We could not complete MOT Intelligence.",
-        analysis: [
-          "A temporary error occurred while running the layered engine.",
-          `Debug hint: ${String(e?.message || e || "unknown error")}`,
-        ],
-        recommended_next_step:
-          "Try again in a moment. If it persists, verify the MOT history API endpoint is reachable.",
-      },
-      actions: [
-        { label: "Open MOT Predictor", href: "https://mot.autodun.com/", type: "secondary" },
-        { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
-      ],
-      meta: {
-        request_id: id,
-        tool_calls,
-        version: MOT_INTELLIGENCE_VERSION,
-        layers: ["L1_risk_scoring", "L2_fix_monitor", "L3_cost", "L4_readiness", "L5_timeline", "L6_ownership", "L7_synthesis"],
-      },
-    };
-    return res.status(200).json(out);
+  if (!responses.length) {
+    return res.status(200).json(makeOOS(id, combinedToolCalls));
   }
+  if (responses.length === 1) {
+    return res.status(200).json(responses[0]);
+  }
+
+  return res.status(200).json(combineMultiIntentResponses(responses, id, combinedToolCalls));
 };
 
 export default handler;
