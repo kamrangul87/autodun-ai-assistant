@@ -470,10 +470,10 @@ export default function AIAssistantPage() {
   return (
     <>
       <Head>
-        <title>Autodun AI Assistant | Free Automotive AI for UK Drivers — MOT, EV & Car Advice</title>
+        <title>Free UK AI Car Advisor — MOT Risk, EV & Used Cars</title>
         <meta
           name="description"
-          content="Get instant AI-powered vehicle guidance. Ask about MOT risk, EV charging near you, or used car buying. Free automotive intelligence powered by real UK data."
+          content="Type your plate, postcode or question. Get instant MOT risk scores, nearby EV chargers, or a used car checklist — free, no signup needed."
         />
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://ai.autodun.com/ai-assistant" />

@@ -28,10 +28,10 @@ export default function PricingPage() {
   return (
     <>
       <Head>
-        <title>Autodun Pricing | Free AI Vehicle Tools — Pro Plan Coming Soon</title>
+        <title>Autodun AI Pricing — Free UK Vehicle Tools</title>
         <meta
           name="description"
-          content="Autodun is free to use. Pro plan with deeper MOT insights, saved reports and reminders coming soon at £4.99/month."
+          content="Autodun AI is free for UK drivers. Instant MOT risk, EV chargers & used car guides — no account needed. Pro plan with saved reports from £4.99/mo."
         />
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://ai.autodun.com/pricing" />

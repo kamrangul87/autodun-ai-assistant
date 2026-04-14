@@ -22,10 +22,10 @@ export default function HowItWorks() {
   return (
     <>
       <Head>
-        <title>How Autodun AI Works | Intent-Routing Automotive Intelligence for UK Drivers</title>
+        <title>How Autodun AI Works — Smart UK Car Advice</title>
         <meta
           name="description"
-          content="Autodun AI classifies your vehicle question and routes it to a specialised workflow — not a generic chatbot. Structured, explainable outputs every time."
+          content="Your question is auto-classified — MOT check, EV charger or used car buy. Each gets a dedicated expert workflow, not a generic chatbot reply."
         />
         <meta name="robots" content="index, follow" />
         <link rel="canonical" href="https://ai.autodun.com/how-it-works" />
