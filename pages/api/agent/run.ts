@@ -318,10 +318,44 @@ async function geocodePostcode(postcode: string): Promise<{ lat: number; lng: nu
   }
 }
 
+// Nominatim (OpenStreetMap) — no API key, comprehensive UK coverage
+async function geocodeViaNominatim(place: string): Promise<{ lat: number; lng: number } | null> {
+  const q = (place || "").trim();
+  if (!q) return null;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q + ", UK")}&format=json&limit=1&countrycodes=gb`;
+    const r = await fetch(url, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Autodun-AI-Assistant/1.0 (https://ai.autodun.com)",
+        "Accept-Language": "en",
+      },
+    });
+
+    if (!r.ok) return null;
+
+    const list = await r.json().catch(() => null);
+    if (!Array.isArray(list) || !list.length) return null;
+
+    const lat = toNum(list[0]?.lat);
+    const lng = toNum(list[0]?.lon); // Nominatim uses "lon"
+    if (lat == null || lng == null) return null;
+
+    return { lat, lng };
+  } catch {
+    return null;
+  }
+}
+
 // ✅ FIXED: places -> choose best result (prefer Greater London), retry with ", London" if ambiguous
 async function geocodeUKPlace(place: string): Promise<{ lat: number; lng: number } | null> {
   const q = (place || "").trim();
   if (!q) return null;
+
+  // Step 0: Nominatim — most reliable for UK towns/cities/areas (no API key needed)
+  const nominatim = await geocodeViaNominatim(q);
+  if (nominatim) return nominatim;
 
   function scorePlaceRow(p: any): number {
     const text = `${p?.name ?? ""} ${p?.region ?? ""} ${p?.admin_county ?? ""} ${p?.admin_district ?? ""} ${p?.country ?? ""}`.toLowerCase();
