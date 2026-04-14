@@ -567,23 +567,13 @@ async function fetchStationsFromSupabase(
   }
 }
 
-async function fetchStationsFromOCM(
+async function fetchStationsFromEVFinder(
   lat: number,
   lng: number,
-  radiusMiles = 25,
-  maxResults = 20
+  radiusMiles = 10
 ): Promise<{ ok: boolean; stations: StationLike[]; error?: string }> {
-  if (!OCM_API_KEY) {
-    return { ok: false, stations: [], error: "OCM API key not set" };
-  }
-
   const url =
-    `https://api.openchargemap.io/v3/poi/?output=json` +
-    `&latitude=${lat}&longitude=${lng}` +
-    `&distance=${radiusMiles}&distanceunit=Miles` +
-    `&maxresults=${maxResults}` +
-    `&countrycode=GB` +
-    `&key=${OCM_API_KEY}`;
+    `${EV_FINDER_STATIONS_URL}?lat=${lat}&lng=${lng}&radius=${radiusMiles}`;
 
   try {
     const r = await fetch(url, {
@@ -593,40 +583,60 @@ async function fetchStationsFromOCM(
 
     if (!r.ok) {
       const t = await r.text().catch(() => "");
-      return { ok: false, stations: [], error: `OCM ${r.status}: ${t.slice(0, 200)}` };
+      return { ok: false, stations: [], error: `EV Finder ${r.status}: ${t.slice(0, 200)}` };
     }
 
-    const rows = (await r.json()) as any[];
+    const body = (await r.json()) as any;
 
-    const stations: StationLike[] = Array.isArray(rows)
-      ? rows
-          .map((row): StationLike | null => {
-            const info = row?.AddressInfo;
-            const sLat = toNum(info?.Latitude);
-            const sLng = toNum(info?.Longitude);
-            if (sLat == null || sLng == null) return null;
-
-            const connections: any[] = Array.isArray(row?.Connections) ? row.Connections : [];
-            const connectors: StationLike["connectors"] = connections.map((c: any) => ({
-              type: String(c?.ConnectionType?.Title ?? "").trim(),
-              power_kw: toNum(c?.PowerKW) ?? undefined,
-              count: toNum(c?.Quantity) ?? 1,
-            }));
-
-            const addressParts = [info?.AddressLine1, info?.Town].filter(Boolean);
-
-            return {
-              id: String(row?.ID ?? ""),
-              name: String(info?.Title ?? "Charging location"),
-              address: addressParts.join(", "),
-              postcode: String(info?.Postcode ?? ""),
-              lat: sLat,
-              lng: sLng,
-              connectors: connectors.length ? connectors : undefined,
-            };
-          })
-          .filter((s): s is StationLike => s !== null)
+    const rawList: any[] = Array.isArray(body)
+      ? body
+      : Array.isArray(body?.stations)
+      ? body.stations
+      : Array.isArray(body?.items)
+      ? body.items
+      : Array.isArray(body?.features)
+      ? body.features
       : [];
+
+    const stations: StationLike[] = rawList
+      .map((s: any): StationLike | null => {
+        const props = s?.properties || s;
+
+        const sLat =
+          toNum(props?.lat) ??
+          toNum(props?.latitude) ??
+          (Array.isArray(s?.geometry?.coordinates) ? toNum(s.geometry.coordinates[1]) : null);
+
+        const sLng =
+          toNum(props?.lng) ??
+          toNum(props?.lon) ??
+          toNum(props?.longitude) ??
+          (Array.isArray(s?.geometry?.coordinates) ? toNum(s.geometry.coordinates[0]) : null);
+
+        if (sLat == null || sLng == null) return null;
+
+        const connectorsDetailed = Array.isArray(props?.connectorsDetailed) ? props.connectorsDetailed : [];
+        const connectorsLegacy = Array.isArray(props?.connectors) ? props.connectors : [];
+
+        const connectors = (connectorsDetailed.length ? connectorsDetailed : connectorsLegacy).map(
+          (c: any) => ({
+            type: String(c?.type || ""),
+            power_kw: toNum(c?.powerKW ?? c?.power_kw ?? c?.power),
+            count: toNum(c?.quantity ?? c?.count) ?? 1,
+          })
+        );
+
+        return {
+          id: String(props?.id ?? props?.station_id ?? props?.ID ?? ""),
+          name: String(props?.name ?? props?.title ?? "Charging location"),
+          address: String(props?.address ?? props?.location ?? ""),
+          postcode: String(props?.postcode ?? props?.post_code ?? ""),
+          lat: sLat,
+          lng: sLng,
+          connectors: connectors.length ? connectors : undefined,
+        };
+      })
+      .filter((s): s is StationLike => s !== null);
 
     return { ok: true, stations };
   } catch (e: any) {
@@ -1100,8 +1110,6 @@ const EV_SUPABASE_URL = process.env.EV_SUPABASE_URL || process.env.SUPABASE_URL 
 const EV_SUPABASE_SERVICE_ROLE_KEY =
   process.env.EV_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-// OpenChargeMap — full UK coverage, used directly by the AI assistant
-const OCM_API_KEY = process.env.NEXT_PUBLIC_OCM_API_KEY || process.env.OCM_API_KEY || "";
 
 async function tool_get_mot_intelligence_v3(vrm: string) {
   const r = await fetch(`${MOT_HISTORY_API_URL}?vrm=${encodeURIComponent(vrm)}`, { method: "GET" });
@@ -1288,11 +1296,11 @@ async function tool_get_ev_chargers_near_postcode(
     };
   }
 
-  const tOcm = Date.now();
-  const ocm = await fetchStationsFromOCM(geo.lat, geo.lng);
-  tool_calls.push({ name: "ocm_ev_stations", ok: ocm.ok, ms: Date.now() - tOcm });
+  const tFetch = Date.now();
+  const feed = await fetchStationsFromEVFinder(geo.lat, geo.lng);
+  tool_calls.push({ name: "ev_finder_stations", ok: feed.ok, ms: Date.now() - tFetch });
 
-  const stations: StationLike[] = ocm.stations;
+  const stations: StationLike[] = feed.stations;
 
   if (!stations.length) {
     return {
@@ -1301,7 +1309,7 @@ async function tool_get_ev_chargers_near_postcode(
       sections: {
         understanding: `EV charging options near ${whereLabel}.`,
         analysis: [
-          `No EV stations found near ${whereLabel} via OpenChargeMap.${ocm.error ? ` (${ocm.error})` : ""}`,
+          `No EV stations found near ${whereLabel}.${feed.error ? ` (${feed.error})` : ""}`,
           "Tip: Open EV Finder and search manually.",
           `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
         ],
@@ -1311,7 +1319,7 @@ async function tool_get_ev_chargers_near_postcode(
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_ocm_empty"] },
+      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_finder_empty"] },
     };
   }
 
