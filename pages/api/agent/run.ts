@@ -141,18 +141,23 @@ function extractPlaceName(text: string): string | null {
   if (extractPostcode(t)) return null;
 
   // Pattern 1: explicit preposition + place name (extended list)
+  // Stop at punctuation OR conjunctions/possessives that signal a new clause
+  // e.g. "near Ilford and my car..." → "Ilford", not "Ilford and my car..."
   const m1 = t.match(
     /\b(?:near|in|around|at|by|close\s+to|within|for)\s+([A-Za-z][A-Za-z\s\-']{2,50})/i
   );
   if (m1) {
-    const cleaned = (m1[1] || "").trim().split(/[.,;:!?]/)[0].trim();
+    const cleaned = (m1[1] || "").trim()
+      .split(/[.,;:!?]|\s+(?:and|or|but)\b|\s+(?:my|its|our|your|his|her)\s+/i)[0]
+      .trim();
     if (cleaned.length >= 2 && cleaned.length <= 50) return cleaned;
   }
 
   // Pattern 2: "chargers/charging/stations PlaceName" (place name after EV service noun)
   // e.g. "EV chargers Ilford", "charging stations Manchester"
+  // Trailing anchor: end-of-string, punctuation, OR conjunction
   const m2 = t.match(
-    /\b(?:charger[s]?|charging|station[s]?|point[s]?)\s+([A-Za-z][A-Za-z\s\-']{2,40}?)(?:\s*$|\s*[?!.,])/i
+    /\b(?:charger[s]?|charging|station[s]?|point[s]?)\s+([A-Za-z][A-Za-z\s\-']{2,40}?)(?:\s*$|\s*[?!.,]|\s+(?:and|or|but)\b)/i
   );
   if (m2) {
     const candidate = (m2[1] || "").trim();
@@ -1183,13 +1188,22 @@ async function tool_get_ev_chargers_near_postcode(
   });
 
   if (!geo) {
+    const locationHint = place
+      ? `"${place}" could not be found — it may be misspelled or too ambiguous.`
+      : postcode
+      ? `Postcode "${postcode}" could not be located.`
+      : "No recognisable UK location was found in your query.";
     return {
-      status: "error",
+      status: "needs_clarification",
       intent: "ev_charging_readiness",
       sections: {
-        understanding: postcode ? `Could not locate postcode ${postcode}.` : `Could not locate place ${place}.`,
-        analysis: ["Check the postcode format / spelling and try again."],
-        recommended_next_step: "Try another UK postcode (e.g., SW1A 1AA), or try a place/city (e.g., Ilford).",
+        understanding: "I need a clearer UK location to find nearby EV chargers.",
+        analysis: [
+          locationHint,
+          'Try a town, city, or postcode — e.g. "chargers near Ilford", "EV in Manchester", or "SW1A 1AA".',
+        ],
+        recommended_next_step:
+          "Which area or postcode are you looking for EV chargers near?",
       },
       actions: [
         { label: "Open EV Charger Finder", href: "https://ev.autodun.com/", type: "primary" },
