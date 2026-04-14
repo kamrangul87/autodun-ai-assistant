@@ -1330,7 +1330,47 @@ async function tool_get_ev_chargers_near_postcode(
     .slice(0, 5);
 
   if (!nearby.length) {
-    const closest = scored.sort((a, b) => a.dKm - b.dKm).slice(0, 5);
+    const maxWidenMiles = 25;
+    const maxWidenKm = maxWidenMiles / 0.621371;
+    const widened = scored
+      .filter((x) => x.dKm <= maxWidenKm)
+      .sort((a, b) => a.dKm - b.dKm)
+      .slice(0, 5);
+
+    if (!widened.length) {
+      // Nothing within 25 miles — be honest rather than showing far-away stations
+      const locationName = whereLabel || "your location";
+      return {
+        status: "ok",
+        intent: "ev_charging_readiness",
+        sections: {
+          understanding: `EV charging options near ${locationName}.`,
+          analysis: [
+            `No EV stations found near ${locationName} in our current database.`,
+            "This may mean the area has limited coverage in our data — not necessarily that chargers don't exist.",
+            "Use the full EV Finder map for complete, up-to-date coverage across the UK.",
+          ],
+          recommended_next_step:
+            "Open EV Charger Finder for the full interactive map and complete UK coverage.",
+        },
+        actions: [
+          {
+            label: "Open EV Charger Finder",
+            href: postcode
+              ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+              : `https://ev.autodun.com/`,
+            type: "primary",
+          },
+          { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
+        ],
+        meta: {
+          request_id: id,
+          tool_calls,
+          version: MOT_INTELLIGENCE_VERSION,
+          layers: ["EV_intent", "EV_none_within_25mi"],
+        },
+      };
+    }
 
     return {
       status: "ok",
@@ -1338,27 +1378,33 @@ async function tool_get_ev_chargers_near_postcode(
       sections: {
         understanding: `EV charging options near ${whereLabel}.`,
         analysis: [
-          `No stations found within ${radiusMiles} miles in the parsed feed.`,
-          ...(closest.length
-            ? [
-                "Closest chargers (widened search):",
-                ...closest.map((x, i) => {
-                  const where = x.s.address || x.s.postcode || "";
-                  const mi = kmToMiles(x.dKm);
-                  return `${i + 1}. ${x.s.name} — ${where} — ~${mi.toFixed(1)} mi`;
-                }),
-              ]
-            : []),
-          "Tip: Prefer sites with multiple stalls and keep a backup within 10–15 minutes.",
-          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: 0, hasHighPower: false })}`,
+          `No stations found within ${radiusMiles} miles — showing closest within ${maxWidenMiles} miles:`,
+          ...widened.map((x, i) => {
+            const where = x.s.address || x.s.postcode || "";
+            const mi = kmToMiles(x.dKm);
+            return `${i + 1}. ${x.s.name} — ${where} — ~${mi.toFixed(1)} mi`;
+          }),
+          "Tip: Prefer sites with multiple stalls and keep a backup option in mind.",
+          `Question: ${pickEvFollowUpQuestion({ postcode, place, text, nearbyCount: widened.length, hasHighPower: false })}`,
         ],
         recommended_next_step: "Open EV Charger Finder to view on map and get directions.",
       },
       actions: [
-        { label: "Open EV Charger Finder", href: postcode ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}` : `https://ev.autodun.com/`, type: "primary" },
+        {
+          label: "Open EV Charger Finder",
+          href: postcode
+            ? `https://ev.autodun.com/?postcode=${encodeURIComponent(postcode)}`
+            : `https://ev.autodun.com/`,
+          type: "primary",
+        },
         { label: "Open AI Assistant", href: "/ai-assistant", type: "secondary" },
       ],
-      meta: { request_id: id, tool_calls, version: MOT_INTELLIGENCE_VERSION, layers: ["EV_intent", "EV_no_nearby"] },
+      meta: {
+        request_id: id,
+        tool_calls,
+        version: MOT_INTELLIGENCE_VERSION,
+        layers: ["EV_intent", "EV_widened_search"],
+      },
     };
   }
 
